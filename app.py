@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
-import pytesseract
-import cv2
-import numpy as np
+import base64
+import json
 import re
 import io
-from PIL import Image, ImageEnhance, ImageFilter
+import requests
+from PIL import Image, ImageEnhance
 
 st.set_page_config(page_title="DataScan → Excel", page_icon="⚡", layout="wide")
 
@@ -18,9 +18,10 @@ st.markdown("""
     .hero-title { font-family:'Space Mono',monospace; font-size:1.8rem; font-weight:700; color:#e8e8f0; }
     .hero-title span { color:#00e5a0; }
     .hero-sub { font-family:'Space Mono',monospace; color:#6b6b8a; font-size:0.8rem; margin-top:0.4rem; }
-    .tip { background:rgba(0,229,160,0.08); border:1px solid rgba(0,229,160,0.2); border-radius:8px; padding:0.8rem 1rem; font-family:'Space Mono',monospace; font-size:0.78rem; color:#00e5a0; margin-bottom:1rem; }
+    .tip  { background:rgba(0,229,160,0.08); border:1px solid rgba(0,229,160,0.2); border-radius:8px; padding:0.8rem 1rem; font-family:'Space Mono',monospace; font-size:0.78rem; color:#00e5a0; margin-bottom:1rem; }
+    .info { background:rgba(123,94,248,0.08); border:1px solid rgba(123,94,248,0.25); border-radius:8px; padding:0.8rem 1rem; font-family:'Space Mono',monospace; font-size:0.78rem; color:#b8a0ff; margin-bottom:1rem; }
     .metric-card { background:#13131a; border:1px solid #2a2a3a; border-radius:10px; padding:1rem; text-align:center; }
-    .metric-val { font-family:'Space Mono',monospace; font-size:1.8rem; font-weight:700; color:#00e5a0; }
+    .metric-val   { font-family:'Space Mono',monospace; font-size:1.8rem; font-weight:700; color:#00e5a0; }
     .metric-label { font-family:'Space Mono',monospace; color:#6b6b8a; font-size:0.7rem; text-transform:uppercase; }
     div[data-testid="stDownloadButton"] button { background:#7b5ef8 !important; color:white !important; border:none !important; font-weight:700 !important; border-radius:8px !important; }
 </style>
@@ -29,202 +30,202 @@ st.markdown("""
 st.markdown("""
 <div class="hero">
   <div class="hero-title">⚡ Data<span>Scan</span> → Excel</div>
-  <div class="hero-sub">// No API · No Cost · Offline OCR · Ditto mark smart-fill</div>
+  <div class="hero-sub">// Free AI Vision · High Accuracy · No Credit Card · Ditto mark smart-fill</div>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
+    st.markdown("### ⚙️ Configuration")
+    st.markdown("""
+    <div class="info">
+    🆓 <b>FREE — No Credit Card</b><br><br>
+    1. Go to <a href="https://console.groq.com" target="_blank" style="color:#00e5a0"><b>console.groq.com</b></a><br>
+    2. Sign up free with Google/GitHub<br>
+    3. Click <b>API Keys → Create API Key</b><br>
+    4. Paste below<br><br>
+    ✅ Free tier · No card needed
+    </div>
+    """, unsafe_allow_html=True)
+
+    default_key = ""
+    try:
+        default_key = st.secrets.get("GROQ_API_KEY", "")
+    except Exception:
+        pass
+
+    api_key = st.text_input("Groq API Key", value=default_key, type="password", placeholder="gsk_...")
+
+    st.markdown("---")
     st.markdown("### 📋 Column Headers")
     col_input = st.text_area("Columns (comma-separated)", value="SKU,QTY,BIN", height=80)
     columns = [c.strip() for c in col_input.split(",") if c.strip()]
 
     st.markdown("---")
     st.markdown("### 🎯 Options")
-    ditto_fill   = st.checkbox('Smart ditto fill (" → copy above)', value=True)
-    show_preview = st.checkbox("Show processed image", value=False)
+    ditto_fill = st.checkbox('Smart ditto fill (" → copy above)', value=True)
+    enhance    = st.checkbox("Enhance image before extraction", value=True)
 
     st.markdown("---")
     st.markdown("""
     <div style='font-family:Space Mono,monospace;font-size:0.7rem;color:#6b6b8a;'>
-    <b style='color:#00e5a0'>No API needed!</b><br>
-    Uses Tesseract OCR.<br><br>
-    <b style='color:#00e5a0'>Ditto marks filled:</b><br>
-    <code>"</code> <code>,,</code> <code>//</code> <code>ditto</code>
+    <b style='color:#00e5a0'>Ditto marks auto-filled:</b><br>
+    <code>"</code> <code>,,</code> <code>//</code> <code>ditto</code> <code>11</code>
     </div>
     """, unsafe_allow_html=True)
 
 
-# ── Core Functions ─────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def prepare_image(pil_img: Image.Image) -> np.ndarray:
-    """Aggressive preprocessing for handwritten ledger sheets."""
-    # Convert and upscale
+def enhance_image(pil_img: Image.Image) -> Image.Image:
     img = pil_img.convert("RGB")
     w, h = img.size
-    # Upscale small images
-    if w < 1500:
-        scale = 1500 / w
-        img = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
-
-    # Enhance
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = ImageEnhance.Sharpness(img).enhance(2.0)
-    img = ImageEnhance.Brightness(img).enhance(1.1)
-
-    # Convert to numpy for OpenCV
-    arr = np.array(img)
-    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-
-    # Denoise
-    gray = cv2.bilateralFilter(gray, 9, 75, 75)
-
-    # Otsu threshold
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Morphological cleanup
-    kernel = np.ones((1, 1), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
-    return thresh
+    if w < 1200:
+        scale = 1200 / w
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    img = ImageEnhance.Contrast(img).enhance(1.6)
+    img = ImageEnhance.Sharpness(img).enhance(1.5)
+    img = ImageEnhance.Brightness(img).enhance(1.05)
+    return img
 
 
-def ocr_image(processed: np.ndarray) -> str:
-    """Run Tesseract with optimal settings for ledger data."""
-    # PSM 6 = assume single uniform block of text (good for tables)
-    # PSM 4 = assume single column (also good)
-    config = r'--oem 3 --psm 6'
-    text = pytesseract.image_to_string(processed, config=config)
-    return text
+def image_to_base64(pil_img: Image.Image) -> str:
+    buf = io.BytesIO()
+    pil_img.save(buf, format="JPEG", quality=95)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
-def parse_to_rows(raw_text: str, columns: list[str]) -> list[dict]:
-    """
-    Parse OCR output into structured rows.
-    Strategy: split each line into N parts matching column count.
-    """
-    rows = []
-    lines = raw_text.splitlines()
+def build_prompt(columns: list[str]) -> str:
+    col_list = ", ".join(columns)
+    return f"""You are an expert OCR system for handwritten warehouse/inventory ledger sheets.
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+Extract EVERY data row from this image into a JSON array.
 
-        # Skip lines that look like pure headers
-        lower_line = line.lower().replace(" ", "")
-        col_lower = [c.lower() for c in columns]
-        if all(c in lower_line for c in col_lower):
-            continue
+COLUMNS: {col_list}
 
-        # Try splitting by 2+ spaces first
-        parts = re.split(r'\s{2,}|\t', line)
-        parts = [p.strip() for p in parts if p.strip()]
+DITTO MARK RULE (CRITICAL):
+In handwritten sheets, ditto marks mean "same as the cell above in that column".
+Ditto marks look like: " (double quote), '' two singles, // double slash, ,, two commas, the word ditto, tick marks like 11.
+When you see a ditto mark → output the ACTUAL VALUE from the row above — NOT the symbol itself.
 
-        # If we got too few parts, try single space split
-        if len(parts) < len(columns):
-            # For 3-column sheets: try to extract last known patterns
-            # e.g. "1955-XL 2 T10-R11-A4" → ["1955-XL", "2", "T10-R11-A4"]
-            parts = line.split()
+RULES:
+1. Extract ALL rows — do not skip any row.
+2. Each row = JSON object with keys exactly: {col_list}
+3. Apply ditto rule to every column.
+4. Blank/unreadable = ""
+5. Keep original format: "1955-XL", "T10-R11-A4", "02"
+6. Do NOT include the header row.
+7. Be careful: 0 vs O, 1 vs I vs l, 5 vs S, 8 vs B
+8. This sheet has 50+ rows — capture every single one.
 
-        if not parts:
-            continue
+Return ONLY a raw JSON array. No markdown, no explanation, no code fences.
 
-        row = {}
-        # Map parts to columns as best as possible
-        if len(parts) >= len(columns):
-            # Assign first N-1 columns normally, rest goes to last column
-            for i, col in enumerate(columns[:-1]):
-                row[col] = parts[i] if i < len(parts) else ""
-            # Last column gets everything remaining joined
-            row[columns[-1]] = " ".join(parts[len(columns)-1:]) if len(parts) >= len(columns) else ""
+Example:
+[
+  {{"SKU": "1955-XL", "QTY": "2", "BIN": "T10-R11-A4"}},
+  {{"SKU": "1613-XL", "QTY": "1", "BIN": "T10-R11-A4"}}
+]"""
+
+
+def extract_with_groq(api_key: str, pil_img: Image.Image, columns: list[str]) -> list[dict]:
+    b64 = image_to_base64(pil_img)
+
+    payload = {
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": build_prompt(columns)
+                    }
+                ]
+            }
+        ],
+        "max_tokens": 8192,
+        "temperature": 0
+    }
+
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        },
+        json=payload,
+        timeout=120
+    )
+
+    if resp.status_code != 200:
+        raise ValueError(f"Groq API error {resp.status_code}: {resp.text[:300]}")
+
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    raw = re.sub(r"```(?:json)?|```", "", raw).strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if m:
+            data = json.loads(m.group())
         else:
-            # Fewer parts than columns — fill what we can
-            for i, col in enumerate(columns):
-                row[col] = parts[i] if i < len(parts) else ""
+            raise ValueError(f"Could not parse response:\n{raw[:400]}")
 
-        # Skip if first column is empty or looks like noise
-        first_val = row.get(columns[0], "").strip()
-        if not first_val or len(first_val) < 2:
-            continue
-
-        rows.append(row)
-
-    return rows
+    return data if isinstance(data, list) else []
 
 
 def apply_ditto(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace ditto marks with value from the row above."""
-    DITTO = re.compile(
-        r'^(\s*["\'`]{1,3}\s*|,,|//|ditto|do|11|〃|\u3003)$',
-        re.IGNORECASE
-    )
+    DITTO = re.compile(r'^(\s*["\'`]{1,3}\s*|,,|//|ditto|do|11|〃)$', re.IGNORECASE)
     df = df.copy()
     for col in df.columns:
         for i in range(1, len(df)):
             val = str(df.at[i, col]).strip()
-            if DITTO.match(val) or val in ('"', "''", "//", ",,", "``", '""'):
+            if DITTO.match(val) or val in ('"', "''", "//", ",,"):
                 df.at[i, col] = df.at[i - 1, col]
     return df
 
 
 def to_excel(df: pd.DataFrame) -> bytes:
-    """Export DataFrame to styled Excel bytes."""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Extracted Data")
         ws = writer.sheets["Extracted Data"]
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-
         hfill  = PatternFill("solid", fgColor="1A1A2E")
         hfont  = Font(bold=True, color="00E5A0", name="Consolas")
-        border = Border(
-            bottom=Side(style="thin", color="2A2A3A"),
-            right=Side(style="thin",  color="2A2A3A"),
-        )
-
+        border = Border(bottom=Side(style="thin", color="2A2A3A"), right=Side(style="thin", color="2A2A3A"))
         for ci, cell in enumerate(ws[1], 1):
-            cell.fill      = hfill
-            cell.font      = hfont
+            cell.fill = hfill; cell.font = hfont
             cell.alignment = Alignment(horizontal="center", vertical="center")
-            max_len = max(
-                (len(str(ws.cell(r, ci).value or "")) for r in range(1, ws.max_row + 1)),
-                default=10,
-            )
-            ws.column_dimensions[cell.column_letter].width = min(max_len + 4, 40)
-
+            max_len = max((len(str(ws.cell(r, ci).value or "")) for r in range(1, ws.max_row+1)), default=10)
+            ws.column_dimensions[cell.column_letter].width = min(max_len+4, 40)
         for ri, row in enumerate(ws.iter_rows(min_row=2), 2):
-            rf = PatternFill("solid", fgColor="0F0F18" if ri % 2 == 0 else "13131E")
+            rf = PatternFill("solid", fgColor="0F0F18" if ri%2==0 else "13131E")
             for cell in row:
-                cell.fill      = rf
-                cell.font      = Font(name="Consolas", color="E8E8F0")
-                cell.border    = border
-                cell.alignment = Alignment(vertical="center")
-
+                cell.fill = rf; cell.font = Font(name="Consolas", color="E8E8F0")
+                cell.border = border; cell.alignment = Alignment(vertical="center")
         ws.row_dimensions[1].height = 22
         ws.freeze_panes = "A2"
-
     buf.seek(0)
     return buf.read()
 
 
-# ── UI Tabs ────────────────────────────────────────────────────────────────────
-
+# ── UI ────────────────────────────────────────────────────────────────────────
 tab1, tab2 = st.tabs(["📤 Upload & Extract", "📊 Data & Export"])
 
 with tab1:
-    st.markdown(
-        '<div class="tip">💡 <b>No API key needed.</b> '
-        'OCR runs directly on the server. '
-        'Ditto marks (<code>"</code>) are auto-filled from the row above.</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="tip">💡 Uses <b>Groq AI Vision</b> for near-perfect accuracy on handwritten sheets. Free — no credit card needed.</div>', unsafe_allow_html=True)
 
     uploaded_files = st.file_uploader(
         "Drop images here",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
-        label_visibility="collapsed",
+        label_visibility="collapsed"
     )
 
     if uploaded_files:
@@ -233,35 +234,26 @@ with tab1:
             go = st.button("⚡ Extract All", type="primary", use_container_width=True)
 
         if go:
-            if not columns:
-                st.error("⚠️ Add at least one column in the sidebar.")
+            if not api_key:
+                st.error("⚠️ Enter your **Groq API Key** in the sidebar. Get it FREE at console.groq.com")
+            elif not columns:
+                st.error("⚠️ Add at least one column.")
             else:
-                all_rows  = []
-                progress  = st.progress(0, text="Starting OCR...")
+                all_rows = []
+                progress = st.progress(0, text="Starting...")
 
                 for idx, uf in enumerate(uploaded_files):
                     progress.progress(idx / len(uploaded_files), text=f"Processing {uf.name}…")
                     try:
                         img = Image.open(uf)
+                        if enhance:
+                            img = enhance_image(img)
 
-                        processed = prepare_image(img)
-
-                        if show_preview:
-                            st.image(processed, caption=f"Processed: {uf.name}", use_column_width=True)
-
-                        raw_text = ocr_image(processed)
-
-                        # Show raw OCR for debugging
-                        with st.expander(f"📄 Raw OCR text — {uf.name}"):
-                            st.text(raw_text)
-
-                        rows = parse_to_rows(raw_text, columns)
-
+                        rows = extract_with_groq(api_key, img, columns)
                         for r in rows:
                             r["__source"] = uf.name
-
                         all_rows.extend(rows)
-                        st.success(f"✅ `{uf.name}` → {len(rows)} rows found")
+                        st.success(f"✅ `{uf.name}` → {len(rows)} rows extracted")
 
                     except Exception as e:
                         st.error(f"❌ `{uf.name}`: {e}")
@@ -273,32 +265,27 @@ with tab1:
                     for c in columns:
                         if c not in df.columns:
                             df[c] = ""
-
                     source_col = df.pop("__source") if "__source" in df.columns else None
                     df = df[columns]
-
                     if ditto_fill:
                         df = apply_ditto(df)
-
                     if source_col is not None:
                         df["Source File"] = source_col.values
-
-                    st.session_state["df"]    = df
+                    st.session_state["df"] = df
                     st.session_state["ready"] = True
                     st.balloons()
                     st.info(f"✨ **{len(df)} rows** extracted — go to **Data & Export** tab.")
                 else:
-                    st.warning("⚠️ No rows were extracted. Try enabling 'Show processed image' to check OCR quality.")
+                    st.warning("No rows extracted. Check image quality and try again.")
 
 with tab2:
     if st.session_state.get("ready") and "df" in st.session_state:
         df = st.session_state["df"]
 
         c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f'<div class="metric-card"><div class="metric-val">{len(df)}</div><div class="metric-label">Total Rows</div></div>', unsafe_allow_html=True)
+        with c1: st.markdown(f'<div class="metric-card"><div class="metric-val">{len(df)}</div><div class="metric-label">Total Rows</div></div>', unsafe_allow_html=True)
         with c2:
-            ne = df.iloc[:, 0].replace("", pd.NA).notna().sum()
+            ne = df.iloc[:,0].replace("", pd.NA).notna().sum()
             st.markdown(f'<div class="metric-card"><div class="metric-val">{ne}</div><div class="metric-label">Valid Rows</div></div>', unsafe_allow_html=True)
         with c3:
             src = df["Source File"].nunique() if "Source File" in df.columns else 1
@@ -306,50 +293,21 @@ with tab2:
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 📋 Extracted Data *(click any cell to edit)*")
-
-        edited_df = st.data_editor(
-            df,
-            use_container_width=True,
-            num_rows="dynamic",
-            hide_index=False,
-        )
+        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", hide_index=False)
         st.session_state["df"] = edited_df
 
         st.markdown("---")
-
-        # ── Download buttons ──────────────────────────────────────────────────
         d1, d2, d3 = st.columns([1, 1, 2])
-
-        excel_data = to_excel(edited_df)
-
         with d1:
-            st.download_button(
-                label="⬇️ Download Excel (.xlsx)",
-                data=excel_data,
+            st.download_button("⬇️ Download Excel (.xlsx)", data=to_excel(edited_df),
                 file_name="extracted_data.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+                use_container_width=True)
         with d2:
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=edited_df.to_csv(index=False).encode("utf-8"),
-                file_name="extracted_data.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+            st.download_button("⬇️ Download CSV", data=edited_df.to_csv(index=False).encode(),
+                file_name="extracted_data.csv", mime="text/csv", use_container_width=True)
         with d3:
             if st.button("🗑️ Clear Data", use_container_width=True):
-                del st.session_state["df"]
-                del st.session_state["ready"]
-                st.rerun()
-
+                del st.session_state["df"]; del st.session_state["ready"]; st.rerun()
     else:
-        st.markdown(
-            '<div style="text-align:center;padding:4rem;color:#6b6b8a;'
-            'font-family:Space Mono,monospace;">'
-            '<div style="font-size:3rem">📊</div><br>'
-            'No data yet — upload files and click <b style="color:#00e5a0">⚡ Extract All</b>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div style="text-align:center;padding:4rem;color:#6b6b8a;font-family:Space Mono,monospace;"><div style="font-size:3rem">📊</div><br>No data yet — upload and click <b style="color:#00e5a0">⚡ Extract All</b></div>', unsafe_allow_html=True)
