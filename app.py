@@ -215,11 +215,24 @@ Extract EVERY data row from this image into a JSON array.
 
 COLUMNS: {col_list}
 
+═══════════════════════════════════════════════════
+SKU IDENTIFICATION — READ THE FIRST 3-4 DIGITS FIRST
+═══════════════════════════════════════════════════
+STEP 1: Read the leading number (e.g. 143, 153, 140, 182, 1430, 1536).
+STEP 2: Read the middle code right after the number (YK, KD, DRS, SKD, MW, YKBLS, DPT, AK).
+STEP 3: Read the COLOR in full uppercase (never abbreviate).
+STEP 4: Read the SIZE after the dash.
+
+READING EXAMPLES:
+  "1430YK" alone → base 1430YK → full SKU = 1430YK{{COLOR}}-{{SIZE}}
+  "1536YK" → full SKU = 1536YK{{COLOR}}-{{SIZE}}
+  "143 YK BLACK XL" → 1430YKBLACK-XL (join parts, remove spaces)
+
 ═══════════════════════════════
-SKU FORMAT RULES (CRITICAL):
+SKU FORMAT PATTERNS (CRITICAL):
 ═══════════════════════════════
 PATTERN 1: {{NUMBER}}YK{{COLOR}}-{{SIZE}}
-  Examples: 1001YKBEIGE-XL, 1057YKBLUE-3XL
+  Examples: 1430YKBEIGE-XL, 1536YKBLUE-3XL, 1001YKBLACK-M
 
 PATTERN 2: {{NUMBER}}KD{{COLOR}}-{{SIZE}} (kids: 7-8, 9-10, 11-12, 13-14)
   Examples: 1003KDMUSTARD-11-12, 1006KDBLUE-7-8
@@ -230,7 +243,7 @@ PATTERN 3: {{NUMBER}}YK{{NUMBER}}{{COLOR}}-{{SIZE}}
 PATTERN 4: AK-{{NUMBER}}{{COLOR}}-{{SIZE}}
   Examples: AK-103BLUE-XL, AK-120BLACK-XXL
 
-PATTERN 5: {{NUMBER}}YKBLS{{COLOR}}-{{SIZE}}
+PATTERN 5: {{NUMBER}}YKBLS-{{SIZE}}
   Examples: 7001YKBLS-L-XL, 7001YKBLS-S-M
 
 PATTERN 6: {{NUMBER}}DRS{{COLOR}}-{{SIZE}}
@@ -251,7 +264,7 @@ PATTERN 10: {{NUMBER}}DPT{{NUMBER}}{{COLOR}}-{{SIZE}}
 PATTERN 11: TB{{NUMBER}}YK{{COLOR}} (no size)
   Examples: TB1YKLAVENDER, TB9YKPINK
 
-COLOR NAMES (never abbreviate):
+COLOR NAMES (UPPERCASE, never abbreviate):
 BEIGE, BLUE, BLACK, BROWN, CREAM, DARKGREY, DENIM, FIROZI, GREEN, GREY,
 INDIGO, KHAKI, LAVENDER, LEMON, MAROON, MEHROON, MINT, MULTI, MUSTARD,
 NAVY, NAVYBLUE, OFFWHITE, OLIVE, ORANGE, PEACH, PINK, PINKRAY,
@@ -263,21 +276,53 @@ SIZE SUFFIXES: XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
                0-3 3-6 6-9 7-8 9-10 11-12 13-14
                S-M L-XL XXL-3XL 4XL-5XL F
 
-RULES:
+═══════════════════════════════════════════════════
+DITTO / COPY-ABOVE RULES — EXTREMELY IMPORTANT:
+═══════════════════════════════════════════════════
+Any cell containing:  "  or  //  or  ,,  or  〃  or word ditto/do
+MEANS: copy the EXACT value from the cell directly ABOVE in the same column.
+This applies to ALL columns: SKU, QTY, and BIN.
+
+DITTO EXAMPLES:
+Row 5: SKU=1430YKBEIGE-XL   QTY=2   BIN=T10-R11-A4
+Row 6: SKU="                QTY=3   BIN="
+→ Row 6 output: SKU=1430YKBEIGE-XL   QTY=3   BIN=T10-R11-A4
+
+Row 7: SKU=//    QTY="    BIN=//
+→ Row 7 output: SKU=1430YKBEIGE-XL   QTY=3   BIN=T10-R11-A4
+
+SIZE CHANGE WITH DITTO BASE: if the row shows a new SIZE next to a ditto SKU,
+keep the base SKU from above but apply the new size.
+Example: above SKU=1430YKBEIGE-XL, current shows " with size XXL
+→ Output: 1430YKBEIGE-XXL
+
+═══════════════════════════════════════════════════
+BIN NUMBER RULES:
+═══════════════════════════════════════════════════
+Format: T{{tower}}-R{{row}}-{{section}}{{number}}
+Examples: T10-R11-A4, T2-R5-B3, T1-R1-A1
+- Copy exactly as written; preserve all letters and numbers
+- BIN ditto (" or //) → copy BIN from row above
+- Never leave BIN blank if row above has a valid BIN
+- T=Tower, R=Row, A/B/C=shelf section
+
+═══════════════════════════════════════════════════
+FINAL RULES:
+═══════════════════════════════════════════════════
 1. Extract ALL rows — never skip any
-2. CASE SENSITIVE — exact uppercase as shown
-3. Ditto marks (", //, ,,, ditto) → copy value from row above
-4. Keep exact format: 1001YKBEIGE-XL not 1001-YK-BEIGE-XL
-5. Never add spaces inside SKU
-6. BIN format: T10-R11-A4 — keep exact
-7. QTY is a number — read carefully (0 vs O, 1 vs l)
+2. UPPERCASE for all SKU and BIN values
+3. No spaces inside SKU
+4. QTY: carefully distinguish 0 vs O, 1 vs l, 6 vs b, 5 vs S
+5. Truly empty cell (no ditto) → use ""
 
 Return ONLY a raw JSON array. No markdown, no explanation.
 Example:
 [
-  {{"SKU": "1001YKBEIGE-XL", "QTY": "2", "BIN": "T10-R11-A4"}},
-  {{"SKU": "1003KDMUSTARD-11-12", "QTY": "5", "BIN": "T10-R11-A4"}}
+  {{"SKU": "1430YKBEIGE-XL", "QTY": "2", "BIN": "T10-R11-A4"}},
+  {{"SKU": "1430YKBEIGE-XXL", "QTY": "3", "BIN": "T10-R11-A4"}},
+  {{"SKU": "1536YKBLUE-L", "QTY": "1", "BIN": "T2-R5-B3"}}
 ]"""
+
 
 # ── Groq API call ─────────────────────────────────────────────────────────────
 def extract_with_groq(api_key, pil_img, columns, _retry=0):
@@ -340,108 +385,159 @@ SIZE_SUFFIX_RE = re.compile(
 )
 
 def build_lookup_maps(master_skus):
-    base_map, num_size_map, num_map = {}, {}, {}
+    """Build 5 lookup structures for fast SKU resolution."""
+    base_map     = {}   # BASE_SKU (no size) → [full SKUs]
+    num_size_map = {}   # (num_str, SIZE) → [full SKUs]
+    num_map      = {}   # num_str → [full SKUs]
+    prefix3_map  = {}   # first 3 digits → [full SKUs]  ← NEW
+    prefix4_map  = {}   # first 4 digits → [full SKUs]  ← NEW
+
     for s in master_skus:
-        base = SIZE_SUFFIX_RE.sub('', s).upper()
+        base = SIZE_SUFFIX_RE.sub("", s).upper()
         base_map.setdefault(base, []).append(s)
-        m_num  = re.match(r'^(\d+)', s)
+
+        m_num  = re.match(r"^(\d+)", s)
         m_size = SIZE_SUFFIX_RE.search(s)
         if m_num:
-            num_map.setdefault(m_num.group(1), []).append(s)
+            num_str = m_num.group(1)
+            num_map.setdefault(num_str, []).append(s)
+            # 3-digit prefix (e.g. "143" covers 1430, 1431…)
+            if len(num_str) >= 3:
+                p3 = num_str[:3]
+                prefix3_map.setdefault(p3, []).append(s)
+            # 4-digit prefix
+            if len(num_str) >= 4:
+                p4 = num_str[:4]
+                prefix4_map.setdefault(p4, []).append(s)
             if m_size:
-                key = (m_num.group(1), m_size.group(1).upper())
+                key = (num_str, m_size.group(1).upper())
                 num_size_map.setdefault(key, []).append(s)
-    return base_map, num_size_map, num_map
+
+    return base_map, num_size_map, num_map, prefix3_map, prefix4_map
+
 
 def _clean(s):
-    return re.sub(r'\s+', '', s).upper()
+    return re.sub(r"\s+", "", s).upper()
 
-def validate_and_fix_sku(sku, master_skus, base_map, num_size_map, num_map):
+
+def _suggest_similar(base_in, base_map, n=3):
+    """Return up to n fuzzy suggestions from master list for error rows."""
+    hits = get_close_matches(base_in, list(base_map.keys()), n=n, cutoff=0.55)
+    suggestions = []
+    for h in hits:
+        candidates = sorted(base_map[h])
+        suggestions.append(candidates[0])
+    return suggestions
+
+
+def validate_and_fix_sku(sku, master_skus, base_map, num_size_map, num_map,
+                          prefix3_map=None, prefix4_map=None):
     """
-    Returns (corrected_sku, status, note, expanded_list)
+    Returns (corrected_sku, status, note, expanded_list, suggestions)
     status: 'ok' | 'fixed' | 'expanded' | 'error'
+    suggestions: list of similar SKUs to show when status=='error'
     """
+    prefix3_map  = prefix3_map  or {}
+    prefix4_map  = prefix4_map  or {}
     raw = str(sku).strip()
     if not raw or raw == "nan":
-        return raw, "ok", "", []
+        return raw, "ok", "", [], []
 
     # 1. Exact match
     if raw in master_skus:
-        return raw, "ok", "", []
+        return raw, "ok", "", [], []
 
     u = _clean(raw)
 
     # 2. Uppercase / whitespace fix
     if u in master_skus:
-        return u, "fixed", "case/space fix", []
+        return u, "fixed", "case/space fix", [], []
 
     def _pick(candidates):
-        if len(candidates) == 1: return candidates[0], "fixed", "resolved", []
-        if len(candidates) > 1:  return candidates[0], "expanded", f"multi({len(candidates)})", candidates
-        return None, "error", "", []
+        if len(candidates) == 1: return candidates[0], "fixed", "resolved", [], []
+        if len(candidates) > 1:  return candidates[0], "expanded", f"multi({len(candidates)})", candidates, []
+        return None, "error", "", [], []
 
-    # 3. NUM-SIZE with dash/space: "1613-XL", "1536 XL", "1403-XL-XL"
-    m = re.match(r'^(\d+)[\s-]+(.+)$', u)
+    # 3. NUM-SIZE with dash/space: "1613-XL", "1536 XL"
+    m = re.match(r"^(\d+)[\s-]+(.+)$", u)
     if m:
-        num, size = m.group(1), m.group(2).strip('-').strip()
+        num, size = m.group(1), m.group(2).strip("-").strip()
         c = num_size_map.get((num, size))
         if c:
-            r, st_, note, ex = _pick(c)
-            if r: return r, st_, note, ex
-        # First token fallback: "XL-XL" -> "XL"
-        first_tok = size.split('-')[0]
-        if first_tok != size:
-            c2 = num_size_map.get((num, first_tok))
+            r, st_, note, ex, sg = _pick(c); 
+            if r: return r, st_, note, ex, sg
+        for tok in [size.split("-")[0], size.split("-")[-1]]:
+            c2 = num_size_map.get((num, tok))
             if c2:
-                r, st_, note, ex = _pick(c2)
-                if r: return r, st_, note, ex
-        # Last token fallback
-        last_tok = size.split('-')[-1]
-        if last_tok != size and last_tok != first_tok:
-            c3 = num_size_map.get((num, last_tok))
-            if c3:
-                r, st_, note, ex = _pick(c3)
-                if r: return r, st_, note, ex
+                r, st_, note, ex, sg = _pick(c2)
+                if r: return r, st_, note, ex, sg
 
     # 4. NUMSIZE no dash: "1536XL"
-    m2 = re.match(r'^(\d+)(XS|XXL|XL|[3-8]XL|S(?!KD)|M(?!W)|L(?!AVE))$', u)
+    m2 = re.match(r"^(\d+)(XS|XXL|XL|[3-8]XL|S(?!KD)|M(?!W)|L(?!AVE))$", u)
     if m2:
         num, size = m2.group(1), m2.group(2)
         c = num_size_map.get((num, size))
         if c:
-            r, st_, note, ex = _pick(c)
-            if r: return r, st_, note, ex
+            r, st_, note, ex, sg = _pick(c)
+            if r: return r, st_, note, ex, sg
 
     # 5. Base exact match (no size) → expand all sizes
-    base_in = SIZE_SUFFIX_RE.sub('', u)
+    base_in = SIZE_SUFFIX_RE.sub("", u)
     if base_in in base_map:
         full = sorted(base_map[base_in])
         m_sz = SIZE_SUFFIX_RE.search(u)
         if m_sz:
-            sz = m_sz.group(1).upper()
-            same = [s for s in full if s.upper().endswith('-' + sz)]
-            if same: return same[0], "fixed", "base+size", []
-        return full[0], "expanded", f"expanded({len(full)} sizes)", full
+            sz   = m_sz.group(1).upper()
+            same = [s for s in full if s.upper().endswith("-" + sz)]
+            if same: return same[0], "fixed", "base+size", [], []
+        return full[0], "expanded", f"expanded({len(full)} sizes)", full, []
 
-    # 6. Fuzzy base (typo correction)
+    # 6. ── NEW: 4-digit prefix match ──
+    m_num = re.match(r"^(\d+)", u)
+    if m_num:
+        num_str = m_num.group(1)
+        # Try 4-digit prefix
+        p4 = num_str[:4] if len(num_str) >= 4 else None
+        if p4 and p4 in prefix4_map:
+            candidates = sorted(prefix4_map[p4])
+            m_sz = SIZE_SUFFIX_RE.search(u)
+            if m_sz:
+                sz   = m_sz.group(1).upper()
+                same = [s for s in candidates if s.upper().endswith("-" + sz)]
+                if same: return same[0], "fixed", f"4-digit prefix match ({p4})", [], []
+            return candidates[0], "expanded", f"4-digit prefix ({p4}, {len(candidates)} SKUs)", candidates, []
+
+        # Try 3-digit prefix (e.g. "143" → matches 1430, 1431 etc.)
+        p3 = num_str[:3] if len(num_str) >= 3 else None
+        if p3 and p3 in prefix3_map:
+            candidates = sorted(prefix3_map[p3])
+            m_sz = SIZE_SUFFIX_RE.search(u)
+            if m_sz:
+                sz   = m_sz.group(1).upper()
+                same = [s for s in candidates if s.upper().endswith("-" + sz)]
+                if same: return same[0], "fixed", f"3-digit prefix match ({p3})", [], []
+            return candidates[0], "expanded", f"3-digit prefix ({p3}, {len(candidates)} SKUs)", candidates, []
+
+    # 7. Fuzzy base match
     bm = get_close_matches(base_in, list(base_map.keys()), n=1, cutoff=0.80)
     if bm:
         full = sorted(base_map[bm[0]])
         m_sz = SIZE_SUFFIX_RE.search(u)
         if m_sz:
-            sz = m_sz.group(1).upper()
-            same = [s for s in full if s.upper().endswith('-' + sz)]
-            if same: return same[0], "fixed", "fuzzy+size", []
-        return full[0], "expanded", f"fuzzy expanded({len(full)})", full
+            sz   = m_sz.group(1).upper()
+            same = [s for s in full if s.upper().endswith("-" + sz)]
+            if same: return same[0], "fixed", "fuzzy+size", [], []
+        return full[0], "expanded", f"fuzzy expanded({len(full)})", full, []
 
-    # 7. Fuzzy full-SKU last resort
-    hits = get_close_matches(u, master_skus, n=1, cutoff=0.82)
-    if hits: return hits[0], "fixed", "fuzzy match", []
+    # 8. Fuzzy full-SKU last resort
+    hits = get_close_matches(u, list(master_skus), n=1, cutoff=0.82)
+    if hits: return hits[0], "fixed", "fuzzy match", [], []
 
-    # ❌ Not found at all
-    return raw, "error", "NOT FOUND IN MASTER LIST", []
+    # ❌ Not found — generate suggestions
+    suggestions = _suggest_similar(base_in, base_map, n=3)
+    return raw, "error", "NOT FOUND IN MASTER LIST", [], suggestions
 
-# ── Ditto fill ────────────────────────────────────────────────────────────────
+
 def apply_ditto(df):
     DITTO = re.compile(r'^(\s*["\'\`]{1,3}\s*|,,|//|ditto|do|11|〃)$', re.IGNORECASE)
     df = df.copy()
@@ -497,10 +593,14 @@ def to_excel(df, row_status):
         # ── Find SKU and SKU Status column indices ──
         sku_col_idx    = None
         status_col_idx = None
+        sugg_col_idx   = None
+        page_col_idx   = None
         for ci, cell in enumerate(ws[1], 1):
             v = str(cell.value).strip().upper()
             if v == "SKU":         sku_col_idx    = ci
             if v == "SKU STATUS":  status_col_idx = ci
+            if v == "SUGGESTIONS": sugg_col_idx   = ci
+            if v == "PDF PAGE":    page_col_idx   = ci
 
         # ── Data rows ──
         for ri, row in enumerate(ws.iter_rows(min_row=2), 2):
@@ -543,16 +643,32 @@ def to_excel(df, row_status):
                     sc.fill = PatternFill("solid", fgColor=CLR_ERROR_BG)
                     sc.font = Font(name="Calibri", color=CLR_ERROR_FG, size=10, bold=True)
 
+            # Colour Suggestions cell (orange bg when it has content)
+            if sugg_col_idx:
+                sgc = ws.cell(ri, sugg_col_idx)
+                if sgc.value and str(sgc.value).strip():
+                    sgc.fill = PatternFill("solid", fgColor="FFF3CD")
+                    sgc.font = Font(name="Calibri", color="7A5000", size=9, italic=True)
+
+            # Style PDF Page cell — light grey, centered, monospace-like
+            if page_col_idx:
+                pgc = ws.cell(ri, page_col_idx)
+                pgc.fill = PatternFill("solid", fgColor="F0F4F8")
+                pgc.font = Font(name="Courier New", color="3A5A7A", size=9)
+                pgc.alignment = Alignment(horizontal="center", vertical="center")
+
         ws.freeze_panes = "A2"
 
         # ── Legend sheet ──
         lg = writer.book.create_sheet("Legend")
         legend_data = [
-            ("Colour", "Meaning"),
+            ("Colour / Column", "Meaning"),
             ("White / Alternating", "SKU matched exactly in master list"),
-            ("Amber background", "SKU was auto-corrected / resolved"),
-            ("Blue background", "SKU was a partial — expanded to full SKU"),
+            ("Amber background", "SKU was auto-corrected / resolved (check the SKU Status column for details)"),
+            ("Blue background", "SKU was a partial — expanded to all matching sizes"),
             ("Red background", "❌ SKU NOT FOUND — please review manually"),
+            ("Suggestions column", "Similar SKUs from master list — pick the correct one for red rows"),
+            ("PDF Page column", "Which page of the PDF this row came from — use to verify against original"),
         ]
         for r, (a, b) in enumerate(legend_data, 1):
             lg.cell(r, 1, a); lg.cell(r, 2, b)
@@ -675,7 +791,8 @@ with tab1:
                                     gc.collect()
 
                                     for r in pg_rows:
-                                        r["__source"] = f"{uf.name} (p{pg_num})"
+                                        r["__source"] = uf.name
+                                        r["__page"] = str(pg_num)
                                     file_rows.extend(pg_rows)
 
                                     # Save partial progress after every page
@@ -703,7 +820,7 @@ with tab1:
                             img.close()
                             del img
                             gc.collect()
-                            for r in rows: r["__source"] = uf.name
+                            for r in rows: r["__source"] = uf.name; r["__page"] = "1"
                             all_rows.extend(rows)
                             st.success(f"✅ `{uf.name}` → {len(rows)} rows extracted")
 
@@ -717,6 +834,7 @@ with tab1:
                     for c in columns:
                         if c not in df.columns: df[c] = ""
                     source_col = df.pop("__source") if "__source" in df.columns else None
+                    page_col   = df.pop("__page")   if "__page"   in df.columns else None
                     df = df[columns]
 
                     if ditto_fill:
@@ -726,7 +844,7 @@ with tab1:
 
                     # SKU Validation + Smart Resolution
                     if validate_sku and master_skus and "SKU" in df.columns:
-                        base_map, num_size_map, num_map = build_lookup_maps(master_skus)
+                        base_map, num_size_map, num_map, prefix3_map, prefix4_map = build_lookup_maps(master_skus)
 
                         fixed_count    = 0
                         expanded_count = 0
@@ -736,43 +854,54 @@ with tab1:
                         for i, row in df.iterrows():
                             sku = str(row.get("SKU", "")).strip()
                             if not sku:
-                                new_rows.append({**row.to_dict(), "SKU Status": "—"})
+                                new_rows.append({**row.to_dict(), "SKU Status": "—", "Suggestions": ""})
                                 row_status[len(new_rows)-1] = "ok"
                                 continue
 
-                            corrected, status, note, expanded = validate_and_fix_sku(
-                                sku, master_skus, base_map, num_size_map, num_map
+                            corrected, status, note, expanded, suggestions = validate_and_fix_sku(
+                                sku, master_skus, base_map, num_size_map, num_map,
+                                prefix3_map, prefix4_map
                             )
+
+                            sugg_str = " | ".join(suggestions) if suggestions else ""
 
                             if expanded and len(expanded) > 1:
                                 for full_sku in expanded:
-                                    new_rows.append({**row.to_dict(), "SKU": full_sku, "SKU Status": f"✅ Expanded from: {sku}"})
+                                    new_rows.append({**row.to_dict(), "SKU": full_sku,
+                                                     "SKU Status": f"✅ Expanded from: {sku}", "Suggestions": ""})
                                     row_status[len(new_rows)-1] = "expanded"
                                 expanded_count += len(expanded)
                                 fixed_count    += 1
 
                             elif status == "fixed":
-                                new_rows.append({**row.to_dict(), "SKU": corrected, "SKU Status": f"✅ Fixed: {sku} → {corrected}"})
+                                new_rows.append({**row.to_dict(), "SKU": corrected,
+                                                 "SKU Status": f"✅ Fixed ({note}): {sku} → {corrected}", "Suggestions": ""})
                                 row_status[len(new_rows)-1] = "fixed"
                                 fixed_count += 1
 
                             elif status == "error":
-                                new_rows.append({**row.to_dict(), "SKU": sku, "SKU Status": f"❌ NOT FOUND: {sku}"})
+                                new_rows.append({**row.to_dict(), "SKU": sku,
+                                                 "SKU Status": f"❌ NOT FOUND: {sku}",
+                                                 "Suggestions": sugg_str})
                                 row_status[len(new_rows)-1] = "error"
                                 error_count += 1
 
                             else:
-                                new_rows.append({**row.to_dict(), "SKU Status": "✅ OK"})
+                                new_rows.append({**row.to_dict(), "SKU Status": "✅ OK", "Suggestions": ""})
                                 row_status[len(new_rows)-1] = "ok"
 
                         df = pd.DataFrame(new_rows)
 
-                        # Re-order columns: original columns + SKU Status last
+                        # Re-order columns: original columns + SKU Status + Suggestions + Page + Source
                         all_cols = [c for c in columns if c in df.columns]
-                        if "SKU Status" in df.columns and "SKU Status" not in all_cols:
-                            all_cols.append("SKU Status")
+                        for extra in ["SKU Status", "Suggestions", "PDF Page", "Source File"]:
+                            if extra in df.columns and extra not in all_cols:
+                                all_cols.append(extra)
+                        if page_col is not None and "PDF Page" not in df.columns:
+                            df["PDF Page"] = page_col.values if len(page_col) == len(df) else ""
                         if source_col is not None:
-                            all_cols.append("Source File")
+                            if "Source File" not in df.columns:
+                                df["Source File"] = ""
                             if len(source_col) == len(df):
                                 df["Source File"] = source_col.values
                         df = df[[c for c in all_cols if c in df.columns]]
@@ -789,6 +918,9 @@ with tab1:
                     else:
                         # No validation — still add status column
                         df["SKU Status"] = "—"
+                        df["Suggestions"] = ""
+                        if page_col is not None:
+                            df["PDF Page"] = page_col.values if len(page_col)==len(df) else ""
                         if source_col is not None:
                             df["Source File"] = source_col.values if len(source_col)==len(df) else ""
 
