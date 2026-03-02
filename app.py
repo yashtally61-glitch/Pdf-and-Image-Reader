@@ -7,6 +7,7 @@ import io
 import os
 import tempfile
 import gc
+import time
 import requests
 from PIL import Image, ImageEnhance
 try:
@@ -279,7 +280,12 @@ Example:
 ]"""
 
 # ── Groq API call ─────────────────────────────────────────────────────────────
-def extract_with_groq(api_key, pil_img, columns):
+def extract_with_groq(api_key, pil_img, columns, _retry=0):
+    """
+    Call Groq API with automatic retry on rate-limit (429).
+    Retries up to 5 times with exponential back-off.
+    """
+    MAX_RETRIES = 5
     b64 = image_to_base64(pil_img)
     payload = {
         "model": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -294,8 +300,29 @@ def extract_with_groq(api_key, pil_img, columns):
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload, timeout=120
     )
+
+    # ── Rate limit: auto-retry with back-off ──────────────────────────────────
+    if resp.status_code == 429:
+        if _retry >= MAX_RETRIES:
+            raise ValueError(f"Groq rate limit hit — exceeded {MAX_RETRIES} retries. Try uploading fewer pages at once.")
+        # Parse retry-after from response if available
+        try:
+            err_body = resp.json()
+            msg = err_body.get("error", {}).get("message", "")
+            # Extract "Please try again in X.Xs" if present
+            m = re.search(r"try again in ([\d.]+)s", msg)
+            wait = float(m.group(1)) if m else 2 ** (_retry + 1)
+        except Exception:
+            wait = 2 ** (_retry + 1)
+
+        wait = max(wait + 1.5, 3.0)   # always add buffer
+        st.warning(f"⏳ Groq rate limit hit — waiting {wait:.1f}s before retry {_retry+1}/{MAX_RETRIES}…")
+        time.sleep(wait)
+        return extract_with_groq(api_key, pil_img, columns, _retry=_retry + 1)
+
     if resp.status_code != 200:
         raise ValueError(f"Groq API error {resp.status_code}: {resp.text[:300]}")
+
     raw = resp.json()["choices"][0]["message"]["content"].strip()
     raw = re.sub(r"```(?:json)?|```", "", raw).strip()
     try:
@@ -609,9 +636,14 @@ with tab1:
 
                                 st.info(f"📄 `{uf.name}` — {total_pages} page(s) found")
                                 pg_status = st.empty()
+                                rows_ticker = st.empty()
+
+                                # Free tier = 30,000 TPM. Each page ≈ 2,000 tokens.
+                                # 4s gap → ~15 pages/min → safely under limit
+                                THROTTLE_SECONDS = 4.0
 
                                 for pg_num in range(1, total_pages + 1):
-                                    pg_status.info(f"⏳ Processing page {pg_num} / {total_pages}…")
+                                    pg_status.info(f"⏳ Processing page {pg_num} / {total_pages}  |  {len(file_rows)} rows saved so far…")
                                     # Load ONE page at a time at safe DPI
                                     page_imgs = convert_from_path(
                                         tmp_path, dpi=130,
@@ -626,14 +658,34 @@ with tab1:
                                     del page_imgs
                                     if enhance_img:
                                         img = enhance_image(img)
-                                    pg_rows = extract_with_groq(api_key, img, columns)
+
+                                    try:
+                                        pg_rows = extract_with_groq(api_key, img, columns)
+                                    except Exception as page_err:
+                                        pg_status.error(f"❌ Page {pg_num} failed: {page_err} — skipping, continuing with next page.")
+                                        img.close(); del img; gc.collect()
+                                        # Save partial progress so user doesn't lose already-extracted rows
+                                        if file_rows:
+                                            st.session_state["partial_rows"] = file_rows.copy()
+                                        time.sleep(THROTTLE_SECONDS)
+                                        continue
+
                                     img.close()
                                     del img
                                     gc.collect()
+
                                     for r in pg_rows:
                                         r["__source"] = f"{uf.name} (p{pg_num})"
                                     file_rows.extend(pg_rows)
-                                    pg_status.success(f"  ✅ Page {pg_num}/{total_pages} → {len(pg_rows)} rows")
+
+                                    # Save partial progress after every page
+                                    st.session_state["partial_rows"] = file_rows.copy()
+
+                                    rows_ticker.success(f"✅ Page {pg_num}/{total_pages} → {len(pg_rows)} rows  |  Total: {len(file_rows)}")
+
+                                    # Throttle between pages to avoid 429
+                                    if pg_num < total_pages:
+                                        time.sleep(THROTTLE_SECONDS)
 
                             finally:
                                 if tmp_path and os.path.exists(tmp_path):
@@ -747,6 +799,15 @@ with tab1:
                     st.info(f"✨ **{len(df)} rows** extracted — go to **📊 Data & Export** tab.")
                 else:
                     st.warning("No rows extracted. Check image quality or try again.")
+                    # Offer to recover partial rows if any were saved mid-run
+                    if st.session_state.get("partial_rows"):
+                        n = len(st.session_state["partial_rows"])
+                        st.info(f"💾 **{n} rows** were saved before the error. Click below to recover them.")
+                        if st.button("♻️ Recover Partial Results"):
+                            all_rows = st.session_state["partial_rows"]
+                            st.session_state.pop("partial_rows", None)
+                            # Re-run the rest of the pipeline with recovered rows
+                            st.rerun()
 
 with tab2:
     if st.session_state.get("ready") and "df" in st.session_state:
