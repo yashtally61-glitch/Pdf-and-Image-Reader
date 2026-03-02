@@ -1,4 +1,1 @@
-tesseract-ocr
-tesseract-ocr-eng
-poppler-utils
 libgl1-mesa-glx
