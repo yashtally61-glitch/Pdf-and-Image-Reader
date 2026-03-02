@@ -4,10 +4,13 @@ import base64
 import json
 import re
 import io
+import os
+import tempfile
+import gc
 import requests
 from PIL import Image, ImageEnhance
 try:
-    from pdf2image import convert_from_bytes
+    from pdf2image import convert_from_bytes, convert_from_path
     PDF_SUPPORT = True
 except ImportError:
     PDF_SUPPORT = False
@@ -188,8 +191,9 @@ with st.sidebar:
 def enhance_image(pil_img):
     img = pil_img.convert("RGB")
     w, h = img.size
+    MAX_DIM = 1400
     if w < 1200:
-        scale = 1200 / w
+        scale = min(1200 / w, MAX_DIM / max(w, h, 1))
         img = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
     img = ImageEnhance.Contrast(img).enhance(1.6)
     img = ImageEnhance.Sharpness(img).enhance(1.5)
@@ -587,24 +591,66 @@ with tab1:
                             if not PDF_SUPPORT:
                                 st.error(f"❌ PDF support not available. Install pdf2image + poppler.")
                                 continue
-                            pages = convert_from_bytes(file_bytes, dpi=200)
-                            st.info(f"📄 `{uf.name}` — {len(pages)} page(s) found")
+                            # Write to temp file to avoid holding full bytes in RAM
+                            tmp_path = None
                             file_rows = []
-                            for pg_num, page_img in enumerate(pages, 1):
-                                img = page_img.convert("RGB")
-                                if enhance_img: img = enhance_image(img)
-                                pg_rows = extract_with_groq(api_key, img, columns)
-                                for r in pg_rows:
-                                    r["__source"] = f"{uf.name} (p{pg_num})"
-                                file_rows.extend(pg_rows)
-                                st.success(f"  ✅ Page {pg_num}/{len(pages)} → {len(pg_rows)} rows")
+                            try:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                                    tmp.write(file_bytes)
+                                    tmp_path = tmp.name
+                                del file_bytes  # free original bytes immediately
+                                gc.collect()
+
+                                # Count pages first at low DPI for speed
+                                probe = convert_from_path(tmp_path, dpi=30, first_page=1, last_page=1)
+                                total_pages = len(convert_from_path(tmp_path, dpi=30))
+                                del probe
+                                gc.collect()
+
+                                st.info(f"📄 `{uf.name}` — {total_pages} page(s) found")
+                                pg_status = st.empty()
+
+                                for pg_num in range(1, total_pages + 1):
+                                    pg_status.info(f"⏳ Processing page {pg_num} / {total_pages}…")
+                                    # Load ONE page at a time at safe DPI
+                                    page_imgs = convert_from_path(
+                                        tmp_path, dpi=130,
+                                        first_page=pg_num, last_page=pg_num,
+                                        fmt="jpeg"
+                                    )
+                                    if not page_imgs:
+                                        continue
+                                    page_img = page_imgs[0]
+                                    img = page_img.convert("RGB")
+                                    page_img.close()
+                                    del page_imgs
+                                    if enhance_img:
+                                        img = enhance_image(img)
+                                    pg_rows = extract_with_groq(api_key, img, columns)
+                                    img.close()
+                                    del img
+                                    gc.collect()
+                                    for r in pg_rows:
+                                        r["__source"] = f"{uf.name} (p{pg_num})"
+                                    file_rows.extend(pg_rows)
+                                    pg_status.success(f"  ✅ Page {pg_num}/{total_pages} → {len(pg_rows)} rows")
+
+                            finally:
+                                if tmp_path and os.path.exists(tmp_path):
+                                    os.unlink(tmp_path)
+
                             all_rows.extend(file_rows)
-                            st.success(f"✅ `{uf.name}` — total {len(file_rows)} rows from {len(pages)} pages")
+                            st.success(f"✅ `{uf.name}` — total {len(file_rows)} rows from {total_pages} pages")
                         else:
                             import io as _io
                             img = Image.open(_io.BytesIO(file_bytes))
+                            del file_bytes
+                            gc.collect()
                             if enhance_img: img = enhance_image(img)
                             rows = extract_with_groq(api_key, img, columns)
+                            img.close()
+                            del img
+                            gc.collect()
                             for r in rows: r["__source"] = uf.name
                             all_rows.extend(rows)
                             st.success(f"✅ `{uf.name}` → {len(rows)} rows extracted")
