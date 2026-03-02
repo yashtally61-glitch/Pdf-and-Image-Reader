@@ -93,7 +93,7 @@ def ocr_image(processed: np.ndarray) -> str:
     """Run Tesseract with optimal settings for ledger data."""
     # PSM 6 = assume single uniform block of text (good for tables)
     # PSM 4 = assume single column (also good)
-    config = r'--oem 3 --psm 6 -c tessedit_char_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-/. ,\"' + "'"
+    config = r'--oem 3 --psm 6'
     text = pytesseract.image_to_string(processed, config=config)
     return text
 
