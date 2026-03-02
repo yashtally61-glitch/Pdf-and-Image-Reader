@@ -209,134 +209,119 @@ def image_to_base64(pil_img):
 # ── AI Prompt ─────────────────────────────────────────────────────────────────
 def build_prompt(columns):
     col_list = ", ".join(columns)
-    return f"""You are an expert OCR system for handwritten warehouse/inventory ledger sheets from an Indian clothing brand.
+    return f"""You are a careful OCR reader for handwritten Indian clothing warehouse ledger sheets.
+Your job is to read what is ACTUALLY WRITTEN — never invent, guess, or auto-complete values.
 
-Extract EVERY data row from this image into a JSON array.
+COLUMNS TO EXTRACT: {col_list}
 
-COLUMNS: {col_list}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO READ THE SKU COLUMN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The SKU column contains EITHER:
+  A) A written SKU code  →  output it exactly as written (join any spaces, uppercase)
+  B) A ditto mark        →  copy the COMPLETE SKU from the row directly above
 
-═══════════════════════════════════════════════════
-SKU IDENTIFICATION — READ THE FIRST 3-4 DIGITS FIRST
-═══════════════════════════════════════════════════
-STEP 1: Read the leading number (e.g. 143, 153, 140, 182, 1430, 1536).
-STEP 2: Read the middle code right after the number (YK, KD, DRS, SKD, MW, YKBLS, DPT, AK).
-STEP 3: Read the COLOR in full uppercase (never abbreviate).
-STEP 4: Read the SIZE after the dash.
+WHAT IS A DITTO MARK IN THE SKU COLUMN:
+  "    \    //    〃    ,,    = (equals sign used as ditto)
+  These mean: THIS ROW HAS THE SAME SKU AS THE ROW ABOVE.
+  Do NOT create a new row. Do NOT invent a new SKU.
+  Simply copy the full SKU string from the previous row.
 
-READING EXAMPLES:
-  "1430YK" alone → base 1430YK → full SKU = 1430YK{{COLOR}}-{{SIZE}}
-  "1536YK" → full SKU = 1536YK{{COLOR}}-{{SIZE}}
-  "143 YK BLACK XL" → 1430YKBLACK-XL (join parts, remove spaces)
+SKU FORMAT — read in this order:
+  1. NUMBER  (e.g. 1592, 1539, 1162, 1338, 5006, 6019, 1255, 1739, 1426)
+  2. CODE    (YK, KD, SKD, DRS, MW, YKBLS, DPT) — written right after the number
+  3. COLOR   (only if clearly written — do NOT guess if not visible)
+  4. SIZE    (after a dash: XL, XXL, M, L, S etc.)
 
-═══════════════════════════════
-SKU FORMAT PATTERNS (CRITICAL):
-═══════════════════════════════
-PATTERN 1: {{NUMBER}}YK{{COLOR}}-{{SIZE}}
-  Examples: 1430YKBEIGE-XL, 1536YKBLUE-3XL, 1001YKBLACK-M
+FULL SKU EXAMPLES:
+  Written "1592 YK BLACK XL"  →  1592YKBLACK-XL
+  Written "1592 YK = XL"      →  the "=" is a ditto for something (color/size from above)
+  Written "1592 YK" only      →  output as "1592YK" (no invented color)
+  Written "AK-141 = XL"       →  AK-141 with ditto size
 
-PATTERN 2: {{NUMBER}}KD{{COLOR}}-{{SIZE}} (kids: 7-8, 9-10, 11-12, 13-14)
-  Examples: 1003KDMUSTARD-11-12, 1006KDBLUE-7-8
+CRITICAL COLOR RULE:
+  If the color is NOT clearly written in that row, do NOT invent one.
+  Output the SKU without a color rather than guess wrong.
+  Wrong: 1592YKBLACK-XL  (if BLACK is not written)
+  Right: 1592YK-XL       (number + code + size only)
 
-PATTERN 3: {{NUMBER}}YK{{NUMBER}}{{COLOR}}-{{SIZE}}
-  Examples: 108YK148PINKRAY-L, 182YK305MUSTARD-XXL
+SIZE SUFFIXES (after dash): XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
+  Kids: 7-8 9-10 11-12 13-14 | Combo: S-M L-XL XXL-3XL 4XL-5XL F
 
-PATTERN 4: AK-{{NUMBER}}{{COLOR}}-{{SIZE}}
-  Examples: AK-103BLUE-XL, AK-120BLACK-XXL
+COLOR NAMES (only if clearly written, always UPPERCASE):
+BEIGE BLUE BLACK BROWN CREAM DARKGREY DENIM FIROZI GREEN GREY INDIGO KHAKI
+LAVENDER LEMON MAROON MEHROON MINT MULTI MUSTARD NAVY NAVYBLUE OFFWHITE
+OLIVE ORANGE PEACH PINK PINKRAY PISTAGREEN POWDERBLUE PURPLE RANI RED RUST
+SEAGREEN SKYBLUE TEAL TURQ WHITE WINE YELLOW BOTTELGREEN CRYSTALTEAL
+HUNTERGREEN BUBBLEGUMPINK HOTPINK PASTELBLUE DEEPGREEN MAUVE BLU
 
-PATTERN 5: {{NUMBER}}YKBLS-{{SIZE}}
-  Examples: 7001YKBLS-L-XL, 7001YKBLS-S-M
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO READ THE BIN COLUMN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BIN is a shelf location code. It has MULTIPLE PARTS separated by dashes.
 
-PATTERN 6: {{NUMBER}}DRS{{COLOR}}-{{SIZE}}
-  Examples: 4001DRSRED-S, 4006DRSRED-XXL
+READ THE FULL BIN — all parts:
+  Example written in PDF: T5 - A7 - D4   →  output: T5-A7-D4
+  Example: T1 - R5 - E2                  →  output: T1-R5-E2
+  Example: T10 - R11 - A4               →  output: T10-R11-A4
 
-PATTERN 7: {{NUMBER}}SKD{{COLOR}}-{{SIZE}}
-  Examples: 6003SKDGREEN-XL, 6004SKDRED-S
+The parts are spread across the row — read ALL of them and join with dashes.
+Do NOT output only the last part (e.g. "D4" alone is WRONG — the full BIN is "T5-A7-D4").
 
-PATTERN 8: {{NUMBER}}MW{{COLOR}}-{{SIZE}}
-  Examples: 8001MWRED-S, 8002MWGREEN-XXL
+BIN DITTO RULE:
+  BIN is written once at the top of a group. Rows below without a BIN written
+  belong to the same BIN.
+  Symbols " \ // 〃 ~ - (tilde or dash alone) in BIN column = copy from row above.
+  Blank BIN cell = copy from row above.
+  NEVER output empty BIN if any row above has a BIN value.
 
-PATTERN 9: KD{{NUMBER}}{{COLOR}}-{{SIZE}}
-  Examples: KD001SKYBLUE-7-8, KD0010PINK-11-12
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO READ THE QTY COLUMN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QTY is a number. Read carefully:
+  0 vs O (zero vs letter O)
+  1 vs l (one vs lowercase L)
+  If written as "9+9" or "2+3" → output as written (e.g. "9+9")
+  If QTY cell has " or // → copy QTY from row above
 
-PATTERN 10: {{NUMBER}}DPT{{NUMBER}}{{COLOR}}-{{SIZE}}
-  Examples: 1379DPT22MAROON-S, 1338DPT9BLACK-XL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DITTO RULES — APPLY TO ALL COLUMNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+All these symbols mean COPY FROM THE ROW ABOVE in that column:
+  "    \    //    ,,    〃    ~ (tilde)    = (equals used as ditto)    blank
 
-PATTERN 11: TB{{NUMBER}}YK{{COLOR}} (no size)
-  Examples: TB1YKLAVENDER, TB9YKPINK
+ONE ROW PER LINE IN THE PDF.
+Do NOT split one PDF row into multiple output rows.
+Do NOT create rows that don't exist in the PDF.
+Do NOT merge two PDF rows into one.
 
-COLOR NAMES (UPPERCASE, never abbreviate):
-BEIGE, BLUE, BLACK, BROWN, CREAM, DARKGREY, DENIM, FIROZI, GREEN, GREY,
-INDIGO, KHAKI, LAVENDER, LEMON, MAROON, MEHROON, MINT, MULTI, MUSTARD,
-NAVY, NAVYBLUE, OFFWHITE, OLIVE, ORANGE, PEACH, PINK, PINKRAY,
-PISTAGREEN, POWDERBLUE, PURPLE, RANI, RED, RUST, SEAGREEN, SKYBLUE,
-TEAL, TURQ, WHITE, WINE, YELLOW, BOTTELGREEN, CRYSTALTEAL, HUNTERGREEN,
-BUBBLEGUMPINK, HOTPINK, PASTELBLUE, DEEPGREEN, MUAVE, MAUVE, BLU
+WORKED EXAMPLE from a real sheet:
+PDF row 1: SKU="1592 YK"  SIZE=="XL"  QTY=1    BIN="T5 - A7 - D4"
+PDF row 2: SKU="1539 YK"  SIZE=="XL"  QTY=9+9  BIN="  "  (blank = ditto)
+PDF row 3: SKU="1162 YK"  SIZE=="XL"  QTY=1    BIN="  "
 
-SIZE SUFFIXES: XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
-               0-3 3-6 6-9 7-8 9-10 11-12 13-14
-               S-M L-XL XXL-3XL 4XL-5XL F
-
-═══════════════════════════════════════════════════
-DITTO / COPY-ABOVE RULES — EXTREMELY IMPORTANT:
-═══════════════════════════════════════════════════
-These symbols ALL mean "copy the value from the cell directly above":
-  "    (double quote)
-  \   (single backslash)
-  //   (double forward slash)
-  ,,   (double comma)
-  blank/empty cell in BIN column
-  〃   (Japanese ditto mark)
-
-This applies to ALL columns: SKU, QTY, and BIN.
-
-DITTO EXAMPLES:
-Row 5: SKU=1430YKBEIGE-XL  QTY=2  BIN=T1-R5-E2
-Row 6: SKU="               QTY=3  BIN="
-Output Row 6: SKU=1430YKBEIGE-XL  QTY=3  BIN=T1-R5-E2
-
-Row 7: SKU=\              QTY="  BIN=//
-Output Row 7: SKU=1430YKBEIGE-XL  QTY=3  BIN=T1-R5-E2
-
-Row 8: SKU=1536YKBLUE-M   QTY=4  BIN=(blank)
-Output Row 8: SKU=1536YKBLUE-M  QTY=4  BIN=T1-R5-E2
-
-SIZE CHANGE WITH DITTO BASE: if a row shows a new SIZE next to a ditto SKU,
-keep the base SKU from above but apply the new size.
-Example: above = 1430YKBEIGE-XL, current row shows " with size XXL
-Output: 1430YKBEIGE-XXL
-
-═══════════════════════════════════════════════════
-BIN NUMBER RULES:
-═══════════════════════════════════════════════════
-Format: T{{tower}}-R{{row}}-{{section}}{{number}}
-Examples: T1-R5-E2, T10-R11-A4, T2-R5-B3, T3-R7-C2
-
-CRITICAL: In handwritten ledger sheets, a BIN is written ONCE at the top of a group.
-All rows below it until a new BIN is written belong to that same BIN.
-A blank or ditto BIN cell = same BIN as the row above. ALWAYS copy it down.
-
-- Copy BIN exactly as written (letters + numbers, no changes)
-- " or \ or // or blank in BIN column: copy BIN from row above
-- NEVER output empty BIN if any row above has a BIN value
-- T = Tower, R = Row, then section letter + number (E2, A4, B3 etc.)
-
-═══════════════════════════════════════════════════
-FINAL RULES:
-═══════════════════════════════════════════════════
-1. Extract ALL rows — never skip any
-2. UPPERCASE for all SKU and BIN values
-3. No spaces inside SKU
-4. QTY: carefully distinguish 0 vs O, 1 vs l, 6 vs b, 5 vs S
-5. Truly empty SKU or QTY (no ditto, no value at all) → use ""
-   Truly empty BIN → copy from the row above (BIN is NEVER left blank)
-
-Return ONLY a raw JSON array. No markdown, no explanation.
-Example:
+Output:
 [
-  {{"SKU": "1430YKBEIGE-XL", "QTY": "2", "BIN": "T10-R11-A4"}},
-  {{"SKU": "1430YKBEIGE-XXL", "QTY": "3", "BIN": "T10-R11-A4"}},
-  {{"SKU": "1536YKBLUE-L", "QTY": "1", "BIN": "T2-R5-B3"}}
-]"""
+  {{"SKU": "1592YK-XL",  "QTY": "1",   "BIN": "T5-A7-D4"}},
+  {{"SKU": "1539YK-XL",  "QTY": "9+9", "BIN": "T5-A7-D4"}},
+  {{"SKU": "1162YK-XL",  "QTY": "1",   "BIN": "T5-A7-D4"}}
+]
+
+NOTE: No color was written for these SKUs so none was added.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL EXTRACTION RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. ONE output row per ONE handwritten line — no more, no less
+2. Read what is written — never invent colors, sizes, or BIN parts
+3. Full BIN always — never output partial BIN (e.g. never just "D4")
+4. SKU ditto = copy entire SKU from row above
+5. BIN ditto or blank = copy entire BIN from row above
+6. UPPERCASE for SKU and BIN
+7. No spaces inside SKU
+
+Return ONLY a raw JSON array. No markdown, no explanation, no preamble.
+"""
 
 
 # ── Groq API call ─────────────────────────────────────────────────────────────
@@ -507,31 +492,46 @@ def validate_and_fix_sku(sku, master_skus, base_map, num_size_map, num_map,
             if same: return same[0], "fixed", "base+size", [], []
         return full[0], "expanded", f"expanded({len(full)} sizes)", full, []
 
-    # 6. ── NEW: 4-digit prefix match ──
+    # 6. ── Prefix match — ONLY when color is genuinely missing from OCR output ──
+    # Do NOT auto-fix if the OCR gave a color — trust what was read.
+    # Only trigger when the SKU has no color part (just NUMBER+CODE+SIZE).
     m_num = re.match(r"^(\d+)", u)
-    if m_num:
+    # Detect if color is absent: SKU matches pattern like 1592YK-XL or 1592YK (no color word)
+    has_no_color = bool(re.match(r"^(\d+)(YK|KD|SKD|DRS|MW|YKBLS|DPT)([-]?(XS|S|M|L|XL|XXL|[3-8]XL|F|\d+-\d+|S-M|L-XL)?)?$", u, re.IGNORECASE))
+    if m_num and has_no_color:
         num_str = m_num.group(1)
-        # Try 4-digit prefix
+        m_sz = SIZE_SUFFIX_RE.search(u)
+        sz = m_sz.group(1).upper() if m_sz else None
+
+        # Try 4-digit prefix — only if EXACTLY ONE candidate matches size
         p4 = num_str[:4] if len(num_str) >= 4 else None
         if p4 and p4 in prefix4_map:
             candidates = sorted(prefix4_map[p4])
-            m_sz = SIZE_SUFFIX_RE.search(u)
-            if m_sz:
-                sz   = m_sz.group(1).upper()
+            if sz:
                 same = [s for s in candidates if s.upper().endswith("-" + sz)]
-                if same: return same[0], "fixed", f"4-digit prefix match ({p4})", [], []
-            return candidates[0], "expanded", f"4-digit prefix ({p4}, {len(candidates)} SKUs)", candidates, []
+                if len(same) == 1:
+                    return same[0], "fixed", f"4-digit prefix match ({p4})", [], []
+                elif len(same) > 1:
+                    return same[0], "expanded", f"4-digit prefix ({p4}, {len(same)} options)", same, []
+            else:
+                if len(candidates) == 1:
+                    return candidates[0], "fixed", f"4-digit prefix match ({p4})", [], []
+                return candidates[0], "expanded", f"4-digit prefix ({p4}, {len(candidates)} SKUs)", candidates, []
 
-        # Try 3-digit prefix (e.g. "143" → matches 1430, 1431 etc.)
+        # Try 3-digit prefix — only if EXACTLY ONE candidate matches size
         p3 = num_str[:3] if len(num_str) >= 3 else None
         if p3 and p3 in prefix3_map:
             candidates = sorted(prefix3_map[p3])
-            m_sz = SIZE_SUFFIX_RE.search(u)
-            if m_sz:
-                sz   = m_sz.group(1).upper()
+            if sz:
                 same = [s for s in candidates if s.upper().endswith("-" + sz)]
-                if same: return same[0], "fixed", f"3-digit prefix match ({p3})", [], []
-            return candidates[0], "expanded", f"3-digit prefix ({p3}, {len(candidates)} SKUs)", candidates, []
+                if len(same) == 1:
+                    return same[0], "fixed", f"3-digit prefix match ({p3})", [], []
+                elif len(same) > 1:
+                    return same[0], "expanded", f"3-digit prefix ({p3}, {len(same)} options)", same, []
+            else:
+                if len(candidates) == 1:
+                    return candidates[0], "fixed", f"3-digit prefix match ({p3})", [], []
+                return candidates[0], "expanded", f"3-digit prefix ({p3}, {len(candidates)} SKUs)", candidates, []
 
     # 7. Fuzzy base match
     bm = get_close_matches(base_in, list(base_map.keys()), n=1, cutoff=0.80)
