@@ -120,7 +120,7 @@ Example:
 def extract_from_file(api_key, uploaded_file, columns, enhance):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
+        model_name="gemini-2.0-flash",
         generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=8192)
     )
 
