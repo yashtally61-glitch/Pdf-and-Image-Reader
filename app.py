@@ -210,117 +210,109 @@ def image_to_base64(pil_img):
 def build_prompt(columns):
     col_list = ", ".join(columns)
     return f"""You are a careful OCR reader for handwritten Indian clothing warehouse ledger sheets.
-Your job is to read what is ACTUALLY WRITTEN — never invent, guess, or auto-complete values.
+Read EXACTLY what is written. Never invent or guess values.
 
 COLUMNS TO EXTRACT: {col_list}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO READ THE SKU COLUMN
+THE SKU COLUMN HAS TWO WRITTEN PARTS — READ BOTH
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-The SKU column contains EITHER:
-  A) A written SKU code  →  output it exactly as written (join any spaces, uppercase)
-  B) A ditto mark        →  copy the COMPLETE SKU from the row directly above
+In this sheet the SKU column is split into two parts written side by side:
 
-WHAT IS A DITTO MARK IN THE SKU COLUMN:
-  "    \    //    〃    ,,    = (equals sign used as ditto)
-  These mean: THIS ROW HAS THE SAME SKU AS THE ROW ABOVE.
-  Do NOT create a new row. Do NOT invent a new SKU.
-  Simply copy the full SKU string from the previous row.
+  PART A (left):  The BASE — a number + code like:  1592 YK  |  1539 YK  |  AK-141
+  PART B (right): The SIZE — written after = or " like:  = XL  |  " XL  |  = XXL  |  = M
 
-SKU FORMAT — read in this order:
-  1. NUMBER  (e.g. 1592, 1539, 1162, 1338, 5006, 6019, 1255, 1739, 1426)
-  2. CODE    (YK, KD, SKD, DRS, MW, YKBLS, DPT) — written right after the number
-  3. COLOR   (only if clearly written — do NOT guess if not visible)
-  4. SIZE    (after a dash: XL, XXL, M, L, S etc.)
+The FULL SKU = BASE + "-" + SIZE
+Examples:
+  PART A="1592 YK"   PART B="= XL"   →  SKU = 1592YK-XL
+  PART A="1539 YK"   PART B="= XL"   →  SKU = 1539YK-XL
+  PART A="1884 YK 83" PART B="= XL"  →  SKU = 1884YK83-XL
+  PART A="AK-141"    PART B="= XL"   →  SKU = AK-141-XL
+  PART A="1517 YK"   PART B="= M"    →  SKU = 1517YK-M
 
-FULL SKU EXAMPLES:
-  Written "1592 YK BLACK XL"  →  1592YKBLACK-XL
-  Written "1592 YK = XL"      →  the "=" is a ditto for something (color/size from above)
-  Written "1592 YK" only      →  output as "1592YK" (no invented color)
-  Written "AK-141 = XL"       →  AK-141 with ditto size
+DITTO RULE FOR PART A (BASE) ONLY:
+  If PART A shows:  "  or  \  or  //  or  〃  or is blank
+  → Copy the BASE from the row above (just the NUMBER+CODE part, NOT the size)
+  → Then attach the SIZE from PART B of the current row
 
-CRITICAL COLOR RULE:
-  If the color is NOT clearly written in that row, do NOT invent one.
-  Output the SKU without a color rather than guess wrong.
-  Wrong: 1592YKBLACK-XL  (if BLACK is not written)
-  Right: 1592YK-XL       (number + code + size only)
+  Example:
+    Row 1: PART A="1592 YK"   PART B="= XL"   →  1592YK-XL
+    Row 2: PART A="  "  (blank/ditto)  PART B="= XXL"  →  1592YK-XXL
+    Row 3: PART A="1539 YK"   PART B="= XL"   →  1539YK-XL
 
-SIZE SUFFIXES (after dash): XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
-  Kids: 7-8 9-10 11-12 13-14 | Combo: S-M L-XL XXL-3XL 4XL-5XL F
+  IMPORTANT: The ditto " only copies the BASE (number+code). 
+  The SIZE always comes from PART B of the CURRENT row.
+  NEVER copy the full previous SKU including size when size differs.
 
-COLOR NAMES (only if clearly written, always UPPERCASE):
-BEIGE BLUE BLACK BROWN CREAM DARKGREY DENIM FIROZI GREEN GREY INDIGO KHAKI
-LAVENDER LEMON MAROON MEHROON MINT MULTI MUSTARD NAVY NAVYBLUE OFFWHITE
-OLIVE ORANGE PEACH PINK PINKRAY PISTAGREEN POWDERBLUE PURPLE RANI RED RUST
-SEAGREEN SKYBLUE TEAL TURQ WHITE WINE YELLOW BOTTELGREEN CRYSTALTEAL
-HUNTERGREEN BUBBLEGUMPINK HOTPINK PASTELBLUE DEEPGREEN MAUVE BLU
+HOW TO BUILD THE BASE:
+  - Read the digits: 1592, 1539, 1162, 1884, 1338, 5006, 6019, 1255, 1739, 1426
+  - Read the code immediately after: YK, KD, SKD, DRS, MW, YKBLS, DPT
+  - If a number appears between code and color like "YK83" or "YK148" include it
+  - Remove all spaces: "1592 YK" → "1592YK"
+  - Do NOT add any color unless a color word is clearly written in that row
+  - Color words: BLACK BLUE RED WHITE GREEN MAROON MUSTARD BEIGE GREY NAVY etc.
+  - If no color word is written → SKU has no color part
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO READ THE BIN COLUMN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BIN is a shelf location code. It has MULTIPLE PARTS separated by dashes.
+HOW TO READ THE SIZE (PART B):
+  = XL   →  XL
+  = XXL  →  XXL
+  " XL   →  XL  (the " here means same size as above, or just read the size written)
+  = M    →  M
+  = S    →  S
+  = L    →  L
+  = 3XL  →  3XL
 
-READ THE FULL BIN — all parts:
-  Example written in PDF: T5 - A7 - D4   →  output: T5-A7-D4
-  Example: T1 - R5 - E2                  →  output: T1-R5-E2
-  Example: T10 - R11 - A4               →  output: T10-R11-A4
-
-The parts are spread across the row — read ALL of them and join with dashes.
-Do NOT output only the last part (e.g. "D4" alone is WRONG — the full BIN is "T5-A7-D4").
-
-BIN DITTO RULE:
-  BIN is written once at the top of a group. Rows below without a BIN written
-  belong to the same BIN.
-  Symbols " \ // 〃 ~ - (tilde or dash alone) in BIN column = copy from row above.
-  Blank BIN cell = copy from row above.
-  NEVER output empty BIN if any row above has a BIN value.
+SIZE OPTIONS: XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
+  Kids: 7-8 9-10 11-12 13-14 | Combo: S-M L-XL XXL-3XL F
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO READ THE QTY COLUMN
+BIN COLUMN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-QTY is a number. Read carefully:
-  0 vs O (zero vs letter O)
-  1 vs l (one vs lowercase L)
-  If written as "9+9" or "2+3" → output as written (e.g. "9+9")
-  If QTY cell has " or // → copy QTY from row above
+BIN is a shelf location. It has multiple parts:  T5 - A7 - D4
+Read ALL parts and join with dashes → T5-A7-D4
+
+The " symbol or ~ or blank in BIN → copy FULL BIN from row above.
+BIN is written once for a group of rows. All rows below inherit it until a new BIN appears.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DITTO RULES — APPLY TO ALL COLUMNS
+QTY COLUMN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-All these symbols mean COPY FROM THE ROW ABOVE in that column:
-  "    \    //    ,,    〃    ~ (tilde)    = (equals used as ditto)    blank
+Read the number carefully. 0≠O, 1≠l.
+"9+9" or "2+3" → output as written.
+" or blank in QTY → copy from row above.
 
-ONE ROW PER LINE IN THE PDF.
-Do NOT split one PDF row into multiple output rows.
-Do NOT create rows that don't exist in the PDF.
-Do NOT merge two PDF rows into one.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORKED EXAMPLE — matches the real sheet exactly
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PDF line 1:  "1592 YK"  "= XL"   QTY=1    BIN="T5 - A7 - D4"
+PDF line 2:  "1539 YK"  "= XL"   QTY=9+9  BIN=" "
+PDF line 3:  "1162 YK"  "= XL"   QTY=1    BIN=" "
+PDF line 4:  "1884 YK83" "= XL"  QTY=1    BIN=" "
+PDF line 5:  "1338 YK"  "= XL"   QTY=1    BIN=" "
+PDF line 6:  (blank)    "= XL"   QTY=1    BIN=" "   ← blank BASE = ditto 1338YK
 
-WORKED EXAMPLE from a real sheet:
-PDF row 1: SKU="1592 YK"  SIZE=="XL"  QTY=1    BIN="T5 - A7 - D4"
-PDF row 2: SKU="1539 YK"  SIZE=="XL"  QTY=9+9  BIN="  "  (blank = ditto)
-PDF row 3: SKU="1162 YK"  SIZE=="XL"  QTY=1    BIN="  "
-
-Output:
+Correct output:
 [
-  {{"SKU": "1592YK-XL",  "QTY": "1",   "BIN": "T5-A7-D4"}},
-  {{"SKU": "1539YK-XL",  "QTY": "9+9", "BIN": "T5-A7-D4"}},
-  {{"SKU": "1162YK-XL",  "QTY": "1",   "BIN": "T5-A7-D4"}}
+  {{"SKU": "1592YK-XL",   "QTY": "1",   "BIN": "T5-A7-D4"}},
+  {{"SKU": "1539YK-XL",   "QTY": "9+9", "BIN": "T5-A7-D4"}},
+  {{"SKU": "1162YK-XL",   "QTY": "1",   "BIN": "T5-A7-D4"}},
+  {{"SKU": "1884YK83-XL", "QTY": "1",   "BIN": "T5-A7-D4"}},
+  {{"SKU": "1338YK-XL",   "QTY": "1",   "BIN": "T5-A7-D4"}},
+  {{"SKU": "1338YK-XL",   "QTY": "1",   "BIN": "T5-A7-D4"}}
 ]
 
-NOTE: No color was written for these SKUs so none was added.
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FINAL EXTRACTION RULES
+RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. ONE output row per ONE handwritten line — no more, no less
-2. Read what is written — never invent colors, sizes, or BIN parts
-3. Full BIN always — never output partial BIN (e.g. never just "D4")
-4. SKU ditto = copy entire SKU from row above
-5. BIN ditto or blank = copy entire BIN from row above
-6. UPPERCASE for SKU and BIN
+2. Ditto on BASE → copy base from above + use current row SIZE
+3. Never copy the size from the previous row unless current row size is also ditto
+4. Never invent a color if not written
+5. Full BIN always — never just the last part like "D4"
+6. UPPERCASE for all SKU and BIN values
 7. No spaces inside SKU
 
-Return ONLY a raw JSON array. No markdown, no explanation, no preamble.
+Return ONLY a raw JSON array. No markdown. No explanation.
 """
 
 
@@ -555,68 +547,100 @@ def validate_and_fix_sku(sku, master_skus, base_map, num_size_map, num_map,
 
 def apply_ditto(df):
     """
-    3-pass ditto and blank fill:
+    Correct ditto fill logic matching real handwritten sheet structure:
 
-    Pass 1 - Ditto symbols on ALL columns:
-        "  backslash  //  ,,  blank  nan  => copy value from the row directly above.
+    The SKU column is built from TWO parts:
+      BASE  = the number+code (e.g. 1592YK)
+      SIZE  = the size suffix (e.g. XL, XXL, M)
 
-    Pass 2 - BIN-only forward fill:
-        BIN is written once for a group of rows. Any blank BIN cell below it
-        inherits the last written BIN value.
+    When SKU cell has a ditto mark (" \ // blank etc.):
+      → Copy only the BASE from the row above
+      → Keep the SIZE from the CURRENT row (don't copy size from above)
+      → Recombine: BASE + "-" + SIZE
 
-    Pass 3 - Drop rows where SKU is still blank after fill (truly empty rows).
+    BIN is forward-filled (written once, covers all rows below).
+    QTY ditto copies the value from the row above.
+    Truly blank rows (no SKU, no QTY) are dropped.
     """
-    df = df.copy()
+    import re as _re
+
+    SIZE_RE = _re.compile(
+        r'-(XS|S|M|L|XL|XXL|[3-8]XL|F|\d+-\d+|S-M|L-XL|XXL-3XL|4XL-5XL|XS-S|M-L)$',
+        _re.IGNORECASE
+    )
 
     def is_ditto(val):
         v = str(val).strip()
-        if not v:
+        if not v or v.lower() in ("nan", "none"):
             return True
-        if v.lower() in ("nan", "none", "ditto", "do"):
+        if _re.match(r'^["\\/,`\'~=]{1,3}$', v):
             return True
-        # All these mean copy-above: " \\ // ,, `` '' ditto mark
-        if re.match(r'^["\\/,`\']{1,3}$', v):
-            return True
-        if v in ('"', "''", "//", ",,", "\\", "\\\\", "\u3003", "11"):
+        if v in ('"', "''", "//", ",,", "\\", "\u3003", "11", "~", "="):
             return True
         return False
 
-    # ── Mark rows where ALL data columns are truly blank (empty/nan/whitespace) ──
-    # A row with ditto symbols (" \\ //) is NOT empty — it means copy from above.
-    # Only rows where every cell is whitespace/empty/nan are truly blank.
     def is_truly_blank(val):
         v = str(val).strip()
         return v == "" or v.lower() in ("nan", "none")
 
+    def get_base(sku):
+        """Strip size suffix to get just the base: 1592YK-XL → 1592YK"""
+        return SIZE_RE.sub("", str(sku).strip())
+
+    def get_size(sku):
+        """Extract size suffix: 1592YK-XL → XL"""
+        m = SIZE_RE.search(str(sku).strip())
+        return m.group(1) if m else ""
+
+    df = df.copy()
+
+    # Mark truly blank rows BEFORE any fill (all data cols empty/nan)
     data_cols = [c for c in df.columns if c.upper() not in ("PDF PAGE", "SOURCE FILE")]
-    truly_empty_rows = df.index[
+    truly_empty_idx = df.index[
         df[data_cols].apply(lambda row: all(is_truly_blank(v) for v in row), axis=1)
     ].tolist()
 
-    # ── Pass 1: Ditto fill for ALL columns ───────────────────────────────────
+    # ── Pass 1: Ditto fill ────────────────────────────────────────────────────
     for col in df.columns:
         for i in range(1, len(df)):
-            if is_ditto(df.at[i, col]):
-                above = df.at[i-1, col]
-                if not is_ditto(above):
-                    df.at[i, col] = above
+            val = str(df.at[i, col]).strip()
+            if not is_ditto(val):
+                continue
+            above = df.at[i-1, col]
+            if is_truly_blank(above):
+                continue
 
-    # ── Pass 2: BIN column forward-fill remaining blanks ─────────────────────
-    # In handwritten sheets BIN is written once and covers all rows below it.
+            if col.upper() == "SKU":
+                # Ditto on SKU = copy BASE from above, keep SIZE from current row
+                above_base = get_base(str(above))
+                above_size = get_size(str(above))
+                raw_current = str(df.at[i, col]).strip()
+                cur_size = get_size(raw_current) if not is_ditto(raw_current) else ""
+                # Use current row's size if it has one, else fall back to above size
+                size = cur_size if cur_size else above_size
+                if size:
+                    df.at[i, col] = above_base + "-" + size
+                else:
+                    df.at[i, col] = above_base
+            else:
+                df.at[i, col] = above
+
+    # ── Pass 2: BIN forward-fill ──────────────────────────────────────────────
     for col in df.columns:
         if col.upper() == "BIN":
             last_bin = None
             for i in range(len(df)):
                 val = df.at[i, col]
-                if not is_ditto(val):
+                if not is_ditto(val) and not is_truly_blank(val):
                     last_bin = val
                 elif last_bin is not None:
                     df.at[i, col] = last_bin
 
-    # ── Pass 3: Drop genuinely empty rows ────────────────────────────────────
-    df = df.drop(index=truly_empty_rows, errors="ignore").reset_index(drop=True)
+    # ── Pass 3: Drop truly blank rows ─────────────────────────────────────────
+    df = df.drop(index=truly_empty_idx, errors="ignore").reset_index(drop=True)
 
     return df
+
 
 # ── Excel export ──────────────────────────────────────────────────────────────
 def to_excel(df, row_status):
