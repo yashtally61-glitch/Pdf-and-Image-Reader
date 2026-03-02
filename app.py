@@ -6,6 +6,11 @@ import re
 import io
 import requests
 from PIL import Image, ImageEnhance
+try:
+    from pdf2image import convert_from_bytes
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
 from difflib import get_close_matches
 
 st.set_page_config(page_title="DataScan → Excel", page_icon="⚡", layout="wide")
@@ -551,8 +556,8 @@ with tab1:
         st.markdown('<div class="warn">⚠️ No master SKU file loaded. Upload <b>Test.xlsx</b> in the sidebar to enable SKU validation.</div>', unsafe_allow_html=True)
 
     uploaded_files = st.file_uploader(
-        "Drop your handwritten sheet images here",
-        type=["jpg","jpeg","png","webp"],
+        "Drop your handwritten sheet images or PDFs here",
+        type=["jpg","jpeg","png","webp","pdf"],
         accept_multiple_files=True,
         label_visibility="collapsed"
     )
@@ -574,12 +579,36 @@ with tab1:
                 for idx, uf in enumerate(uploaded_files):
                     progress.progress(idx / len(uploaded_files), text=f"Processing {uf.name}…")
                     try:
-                        img = Image.open(uf)
-                        if enhance_img: img = enhance_image(img)
-                        rows = extract_with_groq(api_key, img, columns)
-                        for r in rows: r["__source"] = uf.name
-                        all_rows.extend(rows)
-                        st.success(f"✅ `{uf.name}` → {len(rows)} rows extracted")
+                        file_bytes = uf.read()
+                        is_pdf = uf.name.lower().endswith(".pdf")
+
+                        if is_pdf:
+                            # Convert each PDF page to an image
+                            if not PDF_SUPPORT:
+                                st.error(f"❌ PDF support not available. Install pdf2image + poppler.")
+                                continue
+                            pages = convert_from_bytes(file_bytes, dpi=200)
+                            st.info(f"📄 `{uf.name}` — {len(pages)} page(s) found")
+                            file_rows = []
+                            for pg_num, page_img in enumerate(pages, 1):
+                                img = page_img.convert("RGB")
+                                if enhance_img: img = enhance_image(img)
+                                pg_rows = extract_with_groq(api_key, img, columns)
+                                for r in pg_rows:
+                                    r["__source"] = f"{uf.name} (p{pg_num})"
+                                file_rows.extend(pg_rows)
+                                st.success(f"  ✅ Page {pg_num}/{len(pages)} → {len(pg_rows)} rows")
+                            all_rows.extend(file_rows)
+                            st.success(f"✅ `{uf.name}` — total {len(file_rows)} rows from {len(pages)} pages")
+                        else:
+                            import io as _io
+                            img = Image.open(_io.BytesIO(file_bytes))
+                            if enhance_img: img = enhance_image(img)
+                            rows = extract_with_groq(api_key, img, columns)
+                            for r in rows: r["__source"] = uf.name
+                            all_rows.extend(rows)
+                            st.success(f"✅ `{uf.name}` → {len(rows)} rows extracted")
+
                     except Exception as e:
                         st.error(f"❌ `{uf.name}`: {e}")
 
