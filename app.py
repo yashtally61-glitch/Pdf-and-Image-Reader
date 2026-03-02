@@ -279,32 +279,46 @@ SIZE SUFFIXES: XS S M L XL XXL 3XL 4XL 5XL 6XL 7XL 8XL
 ═══════════════════════════════════════════════════
 DITTO / COPY-ABOVE RULES — EXTREMELY IMPORTANT:
 ═══════════════════════════════════════════════════
-Any cell containing:  "  or  //  or  ,,  or  〃  or word ditto/do
-MEANS: copy the EXACT value from the cell directly ABOVE in the same column.
+These symbols ALL mean "copy the value from the cell directly above":
+  "    (double quote)
+  \   (single backslash)
+  //   (double forward slash)
+  ,,   (double comma)
+  blank/empty cell in BIN column
+  〃   (Japanese ditto mark)
+
 This applies to ALL columns: SKU, QTY, and BIN.
 
 DITTO EXAMPLES:
-Row 5: SKU=1430YKBEIGE-XL   QTY=2   BIN=T10-R11-A4
-Row 6: SKU="                QTY=3   BIN="
-→ Row 6 output: SKU=1430YKBEIGE-XL   QTY=3   BIN=T10-R11-A4
+Row 5: SKU=1430YKBEIGE-XL  QTY=2  BIN=T1-R5-E2
+Row 6: SKU="               QTY=3  BIN="
+Output Row 6: SKU=1430YKBEIGE-XL  QTY=3  BIN=T1-R5-E2
 
-Row 7: SKU=//    QTY="    BIN=//
-→ Row 7 output: SKU=1430YKBEIGE-XL   QTY=3   BIN=T10-R11-A4
+Row 7: SKU=\              QTY="  BIN=//
+Output Row 7: SKU=1430YKBEIGE-XL  QTY=3  BIN=T1-R5-E2
 
-SIZE CHANGE WITH DITTO BASE: if the row shows a new SIZE next to a ditto SKU,
+Row 8: SKU=1536YKBLUE-M   QTY=4  BIN=(blank)
+Output Row 8: SKU=1536YKBLUE-M  QTY=4  BIN=T1-R5-E2
+
+SIZE CHANGE WITH DITTO BASE: if a row shows a new SIZE next to a ditto SKU,
 keep the base SKU from above but apply the new size.
-Example: above SKU=1430YKBEIGE-XL, current shows " with size XXL
-→ Output: 1430YKBEIGE-XXL
+Example: above = 1430YKBEIGE-XL, current row shows " with size XXL
+Output: 1430YKBEIGE-XXL
 
 ═══════════════════════════════════════════════════
 BIN NUMBER RULES:
 ═══════════════════════════════════════════════════
 Format: T{{tower}}-R{{row}}-{{section}}{{number}}
-Examples: T10-R11-A4, T2-R5-B3, T1-R1-A1
-- Copy exactly as written; preserve all letters and numbers
-- BIN ditto (" or //) → copy BIN from row above
-- Never leave BIN blank if row above has a valid BIN
-- T=Tower, R=Row, A/B/C=shelf section
+Examples: T1-R5-E2, T10-R11-A4, T2-R5-B3, T3-R7-C2
+
+CRITICAL: In handwritten ledger sheets, a BIN is written ONCE at the top of a group.
+All rows below it until a new BIN is written belong to that same BIN.
+A blank or ditto BIN cell = same BIN as the row above. ALWAYS copy it down.
+
+- Copy BIN exactly as written (letters + numbers, no changes)
+- " or \ or // or blank in BIN column: copy BIN from row above
+- NEVER output empty BIN if any row above has a BIN value
+- T = Tower, R = Row, then section letter + number (E2, A4, B3 etc.)
 
 ═══════════════════════════════════════════════════
 FINAL RULES:
@@ -313,7 +327,8 @@ FINAL RULES:
 2. UPPERCASE for all SKU and BIN values
 3. No spaces inside SKU
 4. QTY: carefully distinguish 0 vs O, 1 vs l, 6 vs b, 5 vs S
-5. Truly empty cell (no ditto) → use ""
+5. Truly empty SKU or QTY (no ditto, no value at all) → use ""
+   Truly empty BIN → copy from the row above (BIN is NEVER left blank)
 
 Return ONLY a raw JSON array. No markdown, no explanation.
 Example:
@@ -539,13 +554,68 @@ def validate_and_fix_sku(sku, master_skus, base_map, num_size_map, num_map,
 
 
 def apply_ditto(df):
-    DITTO = re.compile(r'^(\s*["\'\`]{1,3}\s*|,,|//|ditto|do|11|〃)$', re.IGNORECASE)
+    """
+    3-pass ditto and blank fill:
+
+    Pass 1 - Ditto symbols on ALL columns:
+        "  backslash  //  ,,  blank  nan  => copy value from the row directly above.
+
+    Pass 2 - BIN-only forward fill:
+        BIN is written once for a group of rows. Any blank BIN cell below it
+        inherits the last written BIN value.
+
+    Pass 3 - Drop rows where SKU is still blank after fill (truly empty rows).
+    """
     df = df.copy()
+
+    def is_ditto(val):
+        v = str(val).strip()
+        if not v:
+            return True
+        if v.lower() in ("nan", "none", "ditto", "do"):
+            return True
+        # All these mean copy-above: " \\ // ,, `` '' ditto mark
+        if re.match(r'^["\\/,`\']{1,3}$', v):
+            return True
+        if v in ('"', "''", "//", ",,", "\\", "\\\\", "\u3003", "11"):
+            return True
+        return False
+
+    # ── Mark rows where ALL data columns are truly blank (empty/nan/whitespace) ──
+    # A row with ditto symbols (" \\ //) is NOT empty — it means copy from above.
+    # Only rows where every cell is whitespace/empty/nan are truly blank.
+    def is_truly_blank(val):
+        v = str(val).strip()
+        return v == "" or v.lower() in ("nan", "none")
+
+    data_cols = [c for c in df.columns if c.upper() not in ("PDF PAGE", "SOURCE FILE")]
+    truly_empty_rows = df.index[
+        df[data_cols].apply(lambda row: all(is_truly_blank(v) for v in row), axis=1)
+    ].tolist()
+
+    # ── Pass 1: Ditto fill for ALL columns ───────────────────────────────────
     for col in df.columns:
         for i in range(1, len(df)):
-            val = str(df.at[i, col]).strip()
-            if DITTO.match(val) or val in ('"', "''", "//", ",,"):
-                df.at[i, col] = df.at[i-1, col]
+            if is_ditto(df.at[i, col]):
+                above = df.at[i-1, col]
+                if not is_ditto(above):
+                    df.at[i, col] = above
+
+    # ── Pass 2: BIN column forward-fill remaining blanks ─────────────────────
+    # In handwritten sheets BIN is written once and covers all rows below it.
+    for col in df.columns:
+        if col.upper() == "BIN":
+            last_bin = None
+            for i in range(len(df)):
+                val = df.at[i, col]
+                if not is_ditto(val):
+                    last_bin = val
+                elif last_bin is not None:
+                    df.at[i, col] = last_bin
+
+    # ── Pass 3: Drop genuinely empty rows ────────────────────────────────────
+    df = df.drop(index=truly_empty_rows, errors="ignore").reset_index(drop=True)
+
     return df
 
 # ── Excel export ──────────────────────────────────────────────────────────────
