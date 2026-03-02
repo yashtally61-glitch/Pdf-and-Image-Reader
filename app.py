@@ -260,35 +260,60 @@ def extract_with_groq(api_key: str, pil_img: Image.Image, columns: list[str]) ->
     return data if isinstance(data, list) else []
 
 
-def validate_and_fix_sku(sku: str, master_skus: set) -> tuple[str, bool, str]:
+SIZE_SUFFIX_RE = re.compile(
+    r'-(XS|S|M|L|XL|XXL|[3-8]XL|F|F-S/XXL|F-3XL/5XL|\d+-\d+|S-M|L-XL|XXL-3XL|4XL-5XL|XS-S|M-L|S/M|L/XL|XS/S|M/L)$',
+    re.IGNORECASE
+)
+
+def build_base_map(master_skus: set) -> dict:
+    """Build uppercase-base → [full SKUs] mapping from master list."""
+    base_map = {}
+    for s in master_skus:
+        base = SIZE_SUFFIX_RE.sub('', s).upper()
+        base_map.setdefault(base, []).append(s)
+    return base_map
+
+def validate_and_fix_sku(sku: str, master_skus: set, base_map: dict) -> tuple[str, bool, str, list]:
     """
-    Returns (corrected_sku, was_changed, suggestion).
-    Uses exact match first, then fuzzy match.
+    Returns (corrected_sku, was_changed, suggestion, expanded_rows).
+    - If SKU matches exactly → return as-is
+    - If SKU is partial (no size suffix) → expand to ALL matching full SKUs from master
+    - If SKU is wrong → fuzzy match to best full SKU
+    expanded_rows: list of full SKUs to expand this row into (empty = no expansion)
     """
     sku = str(sku).strip()
     if not sku or sku == "nan":
-        return sku, False, ""
+        return sku, False, "", []
 
-    # Exact match
+    # Exact match in master
     if sku in master_skus:
-        return sku, False, ""
+        return sku, False, "", []
 
-    # Try uppercase
     sku_upper = sku.upper()
+
+    # Exact match after uppercase
     if sku_upper in master_skus:
-        return sku_upper, True, sku_upper
+        return sku_upper, True, sku_upper, []
 
-    # Fuzzy match
-    matches = get_close_matches(sku, master_skus, n=1, cutoff=0.85)
+    # Check if it's a PARTIAL SKU (base matches a known base → expand)
+    base_of_input = SIZE_SUFFIX_RE.sub('', sku_upper)
+    if base_of_input in base_map:
+        full_skus = sorted(base_map[base_of_input])
+        return full_skus[0], True, f"EXPANDED → {len(full_skus)} SKUs", full_skus
+
+    # Fuzzy match against all bases (partial input fuzzy)
+    all_bases = list(base_map.keys())
+    base_matches = get_close_matches(base_of_input, all_bases, n=1, cutoff=0.82)
+    if base_matches:
+        full_skus = sorted(base_map[base_matches[0]])
+        return full_skus[0], True, f"EXPANDED (fuzzy) → {len(full_skus)} SKUs", full_skus
+
+    # Fuzzy match against full SKU list
+    matches = get_close_matches(sku_upper, master_skus, n=1, cutoff=0.85)
     if matches:
-        return matches[0], True, matches[0]
+        return matches[0], True, matches[0], []
 
-    # Also try fuzzy on uppercase
-    matches_upper = get_close_matches(sku_upper, master_skus, n=1, cutoff=0.85)
-    if matches_upper:
-        return matches_upper[0], True, matches_upper[0]
-
-    return sku, False, ""  # Not found, keep as-is but flag
+    return sku, False, "", []  # Not found, keep as-is
 
 
 def apply_ditto(df: pd.DataFrame) -> pd.DataFrame:
@@ -403,30 +428,72 @@ with tab1:
                     if ditto_fill:
                         df = apply_ditto(df)
 
-                    # SKU Validation
+                    # SKU Validation + Partial SKU Expansion
                     if validate_sku and master_skus and "SKU" in df.columns:
+                        base_map = build_base_map(master_skus)
                         fixed_count = 0
+                        expanded_count = 0
                         not_found = []
+                        expanded_rows = []  # Collect all final rows after expansion
+
                         for i, row in df.iterrows():
                             sku = str(row.get("SKU", "")).strip()
                             if not sku:
+                                expanded_rows.append(row.to_dict())
                                 continue
-                            corrected, changed, suggestion = validate_and_fix_sku(sku, master_skus)
-                            if changed:
-                                df.at[i, "SKU"] = corrected
+
+                            corrected, changed, suggestion, full_skus = validate_and_fix_sku(sku, master_skus, base_map)
+
+                            if full_skus:
+                                # Expand this one row into multiple rows (one per size)
+                                for full_sku in full_skus:
+                                    new_row = row.to_dict()
+                                    new_row["SKU"] = full_sku
+                                    new_row["__expanded"] = True
+                                    expanded_rows.append(new_row)
+                                expanded_count += len(full_skus)
+                                fixed_count += 1
+                            elif changed:
+                                r = row.to_dict()
+                                r["SKU"] = corrected
+                                r["__expanded"] = False
+                                expanded_rows.append(r)
                                 corrections[i] = corrected
                                 fixed_count += 1
-                            elif corrected not in master_skus and corrected:
-                                not_found.append(sku)
+                            else:
+                                r = row.to_dict()
+                                r["__expanded"] = False
+                                expanded_rows.append(r)
+                                if corrected not in master_skus and corrected:
+                                    not_found.append(sku)
+
+                        # Rebuild df from expanded rows
+                        df = pd.DataFrame(expanded_rows)
+                        expanded_flag = df.pop("__expanded") if "__expanded" in df.columns else None
+                        # Mark all expanded rows as corrections for amber highlight
+                        corrections = {}
+                        if expanded_flag is not None:
+                            for idx_pos in range(len(df)):
+                                if expanded_flag.iloc[idx_pos]:
+                                    corrections[df.index[idx_pos]] = df.iloc[idx_pos]["SKU"]
 
                         if fixed_count:
-                            st.warning(f"🔧 **{fixed_count} SKUs** auto-corrected to match master list (highlighted amber in Excel).")
+                            st.warning(f"🔧 **{fixed_count} partial/wrong SKUs** matched → **{expanded_count} full SKU rows** generated (highlighted amber in Excel).")
                         if not_found:
                             with st.expander(f"⚠️ {len(not_found)} SKUs not found in master list"):
                                 for s in not_found[:50]:
                                     st.code(s)
 
-                    if source_col is not None:
+                    # Ensure columns exist and are ordered correctly after potential expansion
+                    for c in columns:
+                        if c not in df.columns:
+                            df[c] = ""
+                    extra_cols = [c for c in df.columns if c not in columns]
+                    df = df[columns + extra_cols]
+
+                    if source_col is not None and len(source_col) != len(df):
+                        pass  # source col size mismatch after expansion — skip
+                    elif source_col is not None:
                         df["Source File"] = source_col.values
 
                     st.session_state["df"] = df
